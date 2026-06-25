@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: tidewatch-streamline-worker
+    runtime: python
+    # 'starter' is the cheapest always-on plan; it (and up) gets STATIC outbound
+    # IPs. Free instances sleep and don't guarantee a fixed IP -- don't use free.
+    plan: starter
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    # Persistent disk so renewed tokens survive restarts/deploys.
+    disk:
+      name: token-store
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: STREAMLINE_TOKEN_KEY
+        sync: false          # set in the Render dashboard (secret)
+      - key: STREAMLINE_TOKEN_SECRET
+        sync: false          # set in the Render dashboard (secret)
+      - key: TOKEN_STORE_PATH
+        value: /var/data/tokens.json
+      - key: ADMIN_TOKEN
+        generateValue: true  # Render generates a random secret for admin endpoints
