@@ -40,14 +40,20 @@ CREATE TABLE IF NOT EXISTS reservations (
   reservation_id         INTEGER,
   sales_agent            TEXT,
   status_code            INTEGER,
+  status_id              INTEGER,
   lead_status_id         INTEGER,
+  type_name              TEXT,
   startdate              TEXT,
   enddate                TEXT,
   creation_date          TEXT,
+  last_updated           TEXT,
+  guest_name             TEXT,
   email                  TEXT,
+  phone                  TEXT,
   client_id              INTEGER,
+  unit_name              TEXT,
+  revenue                REAL,
   mgmt_commission_amount REAL,
-  mgmt_commission_pct    REAL,
   source                 TEXT,
   raw_json               TEXT,
   synced_at              TEXT
@@ -75,6 +81,13 @@ def _g(d, *names, default=None):
     return default
 
 
+def _num(v):
+    try:
+        return float(str(v).replace(",", "").replace("$", ""))
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_pipeline(client, arriving_after):
     parsed = client.call("GetReservationsFiltered", {"arriving_after": arriving_after})
     data = _data(parsed)
@@ -94,36 +107,45 @@ def fetch_detail(client, cid):
 
 
 def upsert(conn, res):
+    name = " ".join(x for x in [_g(res, "first_name"), _g(res, "last_name")] if x) or None
     row = (
         _g(res, "confirmation_id"),
         _g(res, "id", "reservation_id"),
         _g(res, "sales_agent_name", "commissioned_agent_name"),
         _g(res, "status_code"),
+        _g(res, "status_id"),
         _g(res, "lead_status_id"),
+        _g(res, "type_name", "maketype_name"),
         _g(res, "startdate"),
         _g(res, "enddate"),
         _g(res, "creation_date"),
+        _g(res, "last_updated"),
+        name,
         _g(res, "email"),
+        _g(res, "phone", "mobile_phone"),
         _g(res, "client_id"),
-        _g(res, "management_commission_amount"),
-        _g(res, "management_commission_percent"),
-        _g(res, "hear_about_name", "source", "referrer_url"),
+        _g(res, "unit_name"),
+        _num(_g(res, "price_total")),
+        _num(_g(res, "management_commission_amount")),
+        _g(res, "hear_about_name", "source"),
         json.dumps(res)[:8000],
         datetime.datetime.now(datetime.timezone.utc).isoformat(),
     )
     conn.execute(
         """INSERT INTO reservations
-           (confirmation_id, reservation_id, sales_agent, status_code, lead_status_id,
-            startdate, enddate, creation_date, email, client_id,
-            mgmt_commission_amount, mgmt_commission_pct, source, raw_json, synced_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           (confirmation_id, reservation_id, sales_agent, status_code, status_id, lead_status_id,
+            type_name, startdate, enddate, creation_date, last_updated, guest_name, email, phone,
+            client_id, unit_name, revenue, mgmt_commission_amount, source, raw_json, synced_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(confirmation_id) DO UPDATE SET
             reservation_id=excluded.reservation_id, sales_agent=excluded.sales_agent,
-            status_code=excluded.status_code, lead_status_id=excluded.lead_status_id,
+            status_code=excluded.status_code, status_id=excluded.status_id,
+            lead_status_id=excluded.lead_status_id, type_name=excluded.type_name,
             startdate=excluded.startdate, enddate=excluded.enddate,
-            creation_date=excluded.creation_date, email=excluded.email,
-            client_id=excluded.client_id, mgmt_commission_amount=excluded.mgmt_commission_amount,
-            mgmt_commission_pct=excluded.mgmt_commission_pct, source=excluded.source,
+            creation_date=excluded.creation_date, last_updated=excluded.last_updated,
+            guest_name=excluded.guest_name, email=excluded.email, phone=excluded.phone,
+            client_id=excluded.client_id, unit_name=excluded.unit_name, revenue=excluded.revenue,
+            mgmt_commission_amount=excluded.mgmt_commission_amount, source=excluded.source,
             raw_json=excluded.raw_json, synced_at=excluded.synced_at""",
         row,
     )
@@ -167,17 +189,21 @@ def main():
     conn.commit()
 
     print(f"\nStored {fetched} reservations in {DB_PATH}.\n")
-    print("Per-reservationist snapshot (cached rows):")
-    q = conn.execute(
-        """SELECT COALESCE(sales_agent,'(unassigned)') agent, COUNT(*) n,
-                  ROUND(SUM(COALESCE(mgmt_commission_amount,0)),0) commission
-           FROM reservations GROUP BY agent ORDER BY n DESC""")
-    for agent, n, commission in q.fetchall():
-        print(f"  {agent:<22} {n:>4} reservations   commission ${commission:,.0f}")
-    print("\nBy status_code:")
-    for sc, n in conn.execute(
-            "SELECT status_code, COUNT(*) FROM reservations GROUP BY status_code ORDER BY 2 DESC"):
-        print(f"  status_code {sc}: {n}")
+    print("Status decode (status_code / type_name -> count, revenue):")
+    for sc, tn, n, rev in conn.execute(
+            """SELECT status_code, type_name, COUNT(*), ROUND(SUM(COALESCE(revenue,0)),0)
+               FROM reservations GROUP BY status_code, type_name ORDER BY 3 DESC"""):
+        print(f"  status_code {sc:<4} type {str(tn):<10} {n:>4} recs   ${rev:,.0f}")
+
+    assigned, total = conn.execute(
+        "SELECT SUM(sales_agent IS NOT NULL), COUNT(*) FROM reservations").fetchone()
+    print(f"\nAgent assignment: {assigned or 0} of {total} have a sales_agent.")
+    print("\nPer-reservationist snapshot:")
+    for agent, n, rev in conn.execute(
+            """SELECT COALESCE(sales_agent,'(unassigned)') agent, COUNT(*) n,
+                      ROUND(SUM(COALESCE(revenue,0)),0) rev
+               FROM reservations GROUP BY agent ORDER BY n DESC"""):
+        print(f"  {agent:<22} {n:>4} recs   revenue ${rev:,.0f}")
     conn.close()
 
 
