@@ -18,20 +18,30 @@ StayFi review). The four ★ items must be confirmed in a vendor demo before we 
 | # | Need | Native in Streamline? | Gap / action |
 |---|------|----------------------|--------------|
 | 1 | One inbox, all guest comms | **Partly** — native unified inbox shows Airbnb + Vrbo | ★ Confirm **two-way reply** + **Booking.com**. If weak → shared-email tool (HelpScout/Front) over relay emails as fallback |
-| 2 | CRM touches, automated + manual rep tasks | **Yes** — lead queues, Communication Center automations, per-agent tasks/KPIs | Confirm manual task assignment UX; configure |
+| 2 | CRM touches, automated + manual rep tasks | **Yes** — automated touches via Communication Center triggers; manual to-dos via CRM lead queues / Lead Management Center. API: read `GetReservationNotes`/`GetReservationFlags`, write `SetReservationFlags` (no task/note-create API — task system stays in Streamline UI; scoreboard reads/flags around it) | ★ Confirm manual to-do can be **assigned to a specific reservationist + tracked to completion** (owner field vs queue-only); else configure |
 | 3 | Texting, calling, email, Mailchimp | **Partly** — email/comms native; calling via StreamPhone add-on | Confirm native SMS; Mailchimp via API/Zapier; price StreamPhone vs external dialer (OpenPhone) |
 | 4 | Gap-night / early-late / accessory upsells | **Mostly** — early/late checkout, add-ons, payments, portal all native | ★ Confirm **gap-night offer to existing guest** + ★ **in-portal buy-and-pay** flow. Build the gap-night trigger via native automations if supported |
 | 5 | Reservationist tracking, close rate, pipeline | **Largely** — per-agent revenue, goals, leaderboard, conversion-coaching reports | ★ Confirm **staged per-agent funnel**; confirm whether it's enough. If not → custom dashboard (but see API limit below) |
 
-## The hard constraint (confirmed)
-Streamline's Open API exposes **only 6 data categories: Property, Reservations,
-Calendars/Availability, Owners, Maintenance, Pricing.** No messaging API. Leads/CRM/users
-appear **not** API-exposed — which is why `GetLeadList`/`GetContactList`/`GetUserList`
-returned `E0014`. Implication: the native CRM/per-agent metrics are **UI-only**. We can
-read reservations + guests (`GetReservationInfo`, `GetClientInfo`, `GetAllReservationsByEmail`)
-via API, but a custom #5 dashboard likely **cannot** pull the lead funnel or per-agent
-metrics programmatically — so we should lean on Streamline's built-in reporting for #5,
-not rebuild it.
+## API reality — CONFIRMED from the live apidocs (2026-06-26)
+Read the real method catalog at partner.streamlinevrs.com/apidocs. Corrects earlier
+assumptions:
+- **#5 IS buildable via API.** `GetReservationsFiltered` filters reservations by
+  `status_code` (inquiry/quote/booked stages), `modified_since` (incremental sync), and
+  `converted_since` (lead→booking conversion). `GetReservationInfo` with
+  `show_agents_referrer_information` returns the **sales agent (reservationist) name**, and
+  `show_commission_information` returns commission %. So per-rep pipeline, close rate,
+  revenue, and commission are all API-reachable. **Leads = reservations at a status_code**;
+  there is no separate lead/contact/user object.
+- **#4 upsells via API:** `AddFolioItem` (add a charge) + `AddReservationPayment` (collect).
+- **No messaging API** — confirmed (no messaging group). Guest comms stay in Streamline's
+  native inbox / email; not API-driven.
+- The earlier `E0014` errors were **wrong method names** (`GetReservationList`/`GetLeadList`
+  don't exist), not permission walls. `GetReservationInfo` was already allowed (returned
+  E0020 "id not found", not E0014), so the token likely already has reservation read access.
+- Still to confirm by re-running the audit with correct names: that the token returns this
+  data live, and which **write** methods (`MakeReservation`, `AddFolioItem`,
+  `AddReservationPayment`, `SetReservationFlags`) need enabling.
 
 ## What this means for "build"
 - **Mostly configuration, not construction.** Turn on / set up Streamline's CRM, lead

@@ -245,9 +245,11 @@ def run_audit(client):
                 row["highlights"] = hi
             for key, names in (("property_id", ("property_id", "propertyID")),
                                ("confirmation_id", ("confirmation_id", "confirmationID")),
-                               ("reservation_id", ("reservation_id", "reservationID", "id"))):
+                               ("reservation_id", ("reservation_id", "reservationID"))):
                 if key not in discovered:
                     val = _extract_id(data, *names)
+                    if isinstance(val, list):
+                        val = val[0] if val else None
                     if val:
                         discovered[key] = val
         results.append(row)
