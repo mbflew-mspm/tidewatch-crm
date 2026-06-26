@@ -39,9 +39,19 @@ assumptions:
 - The earlier `E0014` errors were **wrong method names** (`GetReservationList`/`GetLeadList`
   don't exist), not permission walls. `GetReservationInfo` was already allowed (returned
   E0020 "id not found", not E0014), so the token likely already has reservation read access.
-- Still to confirm by re-running the audit with correct names: that the token returns this
-  data live, and which **write** methods (`MakeReservation`, `AddFolioItem`,
-  `AddReservationPayment`, `SetReservationFlags`) need enabling.
+- Still to confirm: which **write** methods (`MakeReservation`, `AddFolioItem`,
+  `AddReservationPayment`, `SetReservationFlags`) need enabling (only matters for lead
+  intake / upsell-via-API; read is fully open).
+
+## CONFIRMED LIVE (2026-06-26, audit run from droplet 161.35.122.5)
+All read methods returned `[DATA]`, no `E0012`/`E0014`. `GetReservationInfo` on a real
+reservation returned the exact fields the scoreboard needs:
+`sales_agent_name` + `commissioned_agent_name` (the reservationist), `status_code` /
+`lead_status_id` (stage), `management_commission_amount`/`_percent`, `client_id`,
+`creation_date`, `startdate`/`enddate`, guest `email`. `GetReservationsFiltered` returns
+the full pipeline as a `confirmation_id` array; `GetHearAboutList` gives lead sources
+(VRBO, Homeaway…); `GetReservationTypes` gives the type/status catalog. **#5 is proven
+buildable on the existing token.** Next: build the sync + scoreboard.
 
 ## What this means for "build"
 - **Mostly configuration, not construction.** Turn on / set up Streamline's CRM, lead
@@ -78,6 +88,19 @@ assumptions:
 4. Reporting: is there a **staged per-agent conversion funnel** (new→quoted→won/lost), or
    only per-agent revenue/goals? Are per-agent metrics **exportable / API-reachable**?
 5. Channels: native **SMS**? **StreamPhone** calling price? **Mailchimp** sync path?
+
+## Build scope (what we build vs configure)
+**Build — core (unconditional):** sync engine (Streamline→cache, incremental, rate-limited,
+token auto-renew); metrics engine (#5: per-rep close rate, revenue, commission,
+speed-to-lead, source mix); dashboard + login; status-code→stage mapping.
+**Build — small:** alerts & nudges (speed-to-lead + idle-lead flags via SetReservationFlags
++ manager daily digest — the useful half of #2); Mailchimp sync (or Zapier).
+**Build — conditional on the Streamline demo:** todo/task layer (only if native per-rep
+assignment+completion is weak); gap-night upsell engine (only if native automations can't);
+lead-intake bridge (website/phone→Streamline; needs write methods, untested).
+**Configure, NOT build (native Streamline):** automated touches (triggers), manual lead
+queues, unified inbox (Airbnb/Vrbo), early/late checkout, add-ons, payments, Happy Stays
+portal, calling (StreamPhone), SMS.
 
 ## Sequence
 1. Matt: send scope request + get apidocs to Claude + book Streamline demo (checklist above).
