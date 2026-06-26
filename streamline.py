@@ -2,16 +2,16 @@
 Streamline VRS API client for Tidewatch — built for *durable* access.
 
 Two things make access "always on":
-  1. Fixed IP — this module is meant to run on a host with one static outbound
-     IP that's allow-listed in Streamline once (see render.yaml). Location of
-     the operator no longer matters.
-  2. Token auto-renewal — Streamline tokens expire every 90 days. Every call
-     auto-detects an expired-token response, calls RenewExpiredToken, persists
-     the new pair via TokenStore, and retries once. No manual rotation, no
-     lockout.
+  1. Fixed IP — runs on a host with one static outbound IP allow-listed in
+     Streamline once (see render.yaml / the VPS). Operator location no longer matters.
+  2. Token auto-renewal — tokens expire every 90 days. Every call auto-detects an
+     expired-token response, calls RenewExpiredToken, persists the new pair via
+     TokenStore, and retries once. No manual rotation, no lockout.
 
-Stdlib only (urllib) so it has zero external dependencies and runs anywhere —
-imported by both the CLI (audit_streamline.py) and the service (app.py).
+Stdlib only (urllib) — zero external deps; imported by the CLI and the service.
+
+NOTE: method names + params below are taken from the live apidocs
+(partner.streamlinevrs.com/apidocs), not guessed.
 """
 
 import json
@@ -25,10 +25,6 @@ ENDPOINT = "https://web.streamlinevrs.com/api/json"
 RATE_DELAY_SEC = 0.8
 TIMEOUT_SEC = 30
 
-# Codes/keywords that mean "token expired, renew it". The exact Streamline code
-# is not yet confirmed against the apidocs, so we match defensively: any code in
-# this (env-overridable) set, OR a description mentioning an expired token.
-# TODO: confirm the real expired-token code from the audit/apidocs and pin it.
 _EXPIRED_CODES = set(
     c.strip() for c in os.environ.get("STREAMLINE_TOKEN_EXPIRED_CODES", "").split(",") if c.strip()
 )
@@ -46,11 +42,7 @@ def _is_token_expired(code, desc):
 
 
 class TokenStore:
-    """File-backed token store, seeded from env on first run.
-
-    On a host the file lives on a persistent disk (see render.yaml), so renewed
-    tokens survive restarts and deploys. Falls back to the env seed if no file.
-    """
+    """File-backed token store, seeded from env on first run."""
 
     def __init__(self, path, seed_key, seed_secret):
         self.path = path
@@ -127,12 +119,7 @@ class StreamlineClient:
         return parsed
 
     def renew(self):
-        """Renew expired tokens and persist the new pair.
-
-        NOTE: method name, param names, and response shape are best-effort and
-        must be confirmed against the apidocs — they're isolated here so there's
-        exactly one place to fix once verified.
-        """
+        """Renew expired tokens and persist the new pair. Confirm field names vs apidocs."""
         key, secret = self.store.current()
         body = {"methodName": "RenewExpiredToken", "params": {"token_key": key, "token_secret": secret}}
         parsed = self._post(body)
@@ -147,37 +134,32 @@ class StreamlineClient:
 
 
 # --------------------------------------------------------------------------
-# Read-only capability audit (shared by CLI and /audit endpoint).
+# Read-only capability audit — REAL method names from the live apidocs.
+# Goal: prove the #5 scoreboard is buildable — pull the pipeline
+# (GetReservationsFiltered), then a reservation's detail with the sales-agent
+# + commission fields (GetReservationInfo). All read-only.
 # --------------------------------------------------------------------------
 PROBES = [
     {"group": "core", "method": "GetPropertyList", "params": {},
-     "note": "Connectivity + master unit list."},
-    {"group": "core", "method": "GetPropertyInfo", "params": {}, "needs": ["property_id"],
-     "note": "Per-unit detail."},
-    {"group": "reservations", "method": "GetReservationList", "params": {},
-     "note": "Bookings — needed to attribute closed-won to a rep."},
-    {"group": "reservations", "method": "GetReservationInfo", "params": {}, "needs": ["reservation_id"],
-     "note": "Single reservation detail (look for a rep/owner/agent field — the #5 linchpin)."},
-    {"group": "leads", "method": "GetLeadList", "params": {},
-     "note": "Do open sales leads/inquiries exist in the API?"},
-    {"group": "leads", "method": "GetInquiryList", "params": {},
-     "note": "Alt name for inbound inquiries."},
-    {"group": "leads", "method": "GetReservationInquiries", "params": {},
-     "note": "Inquiry-stage reservations (pre-booking)."},
-    {"group": "leads", "method": "GetContactList", "params": {},
-     "note": "Guest/contact records."},
-    {"group": "users", "method": "GetUserList", "params": {},
-     "note": "Reservationists/agents — needed to map ownership to a person (#5)."},
-    {"group": "messaging", "method": "GetMessageList", "params": {},
-     "note": "Confirms whether a messaging API exists (Enso says it does not)."},
-    {"group": "messaging", "method": "GetReservationMessages", "params": {}, "needs": ["reservation_id"],
-     "note": "Message thread tied to a reservation."},
-    {"group": "quotes", "method": "GetPropertyAvailability", "params": {}, "needs": ["property_id"],
-     "note": "Availability."},
-    {"group": "quotes", "method": "GetPropertyRates", "params": {}, "needs": ["property_id"],
-     "note": "Rates."},
-    {"group": "changes", "method": "GetReservationsChanged", "params": {},
-     "note": "Delta sync — avoids hitting the 100/min cap."},
+     "note": "Connectivity + master unit list (already confirmed working)."},
+
+    {"group": "catalog", "method": "GetReservationTypes", "params": {},
+     "note": "Status/type catalog — maps the status_code values used as inquiry/quote/booked stages."},
+    {"group": "catalog", "method": "GetHearAboutList", "params": {},
+     "note": "Lead-source list (marketing attribution)."},
+
+    {"group": "pipeline", "method": "GetReservationsInHouse", "params": {},
+     "note": "Current in-house reservations — also harvests an id to chain."},
+    {"group": "pipeline", "method": "GetReservationsFiltered", "params": {"arriving_after": "2025-06-01"},
+     "note": "THE PIPELINE: reservations by status/date. Confirms list-read + harvests a confirmation_id."},
+
+    {"group": "rep-attribution", "method": "GetReservationInfo",
+     "params": {"show_agents_referrer_information": "1", "show_commission_information": "1",
+                "show_payments_folio_history": "1"},
+     "needs": ["confirmation_id"],
+     "note": "THE #5 CHECK: response should carry the sales agent (reservationist) name + commission + folio/payments."},
+    {"group": "rep-attribution", "method": "GetReservationNotes", "params": {}, "needs": ["confirmation_id"],
+     "note": "Notes/activity on a reservation."},
 ]
 
 
@@ -186,6 +168,8 @@ def _classify(parsed):
     code = str(status.get("code", ""))
     desc = status.get("description", "")
     data = (parsed or {}).get("data")
+    if data in (None, "", [], {}):
+        data = (parsed or {}).get("Response", {}).get("data") if isinstance(parsed.get("Response"), dict) else data
     if code == "E0012":
         verdict = "IP_BLOCKED"
     elif code.startswith("E"):
@@ -201,11 +185,11 @@ def _classify(parsed):
 
 def _extract_id(data, *keys):
     def walk(node, depth=0):
-        if depth > 6:
+        if depth > 7:
             return None
         if isinstance(node, dict):
             for k in keys:
-                if k in node and node[k] not in (None, "", "0"):
+                if k in node and node[k] not in (None, "", "0", 0):
                     return node[k]
             for v in node.values():
                 got = walk(v, depth + 1)
@@ -218,6 +202,21 @@ def _extract_id(data, *keys):
                     return got
         return None
     return walk(data)
+
+
+def _find_fields(node, needles, out, depth=0):
+    """Collect scalar fields whose key name contains any needle — surfaces the
+    agent/commission/status fields so we can SEE them in the report."""
+    if depth > 8 or len(out) >= 14:
+        return
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if any(n in str(k).lower() for n in needles) and not isinstance(v, (dict, list)):
+                out.setdefault(k, v)
+            _find_fields(v, needles, out, depth + 1)
+    elif isinstance(node, list):
+        for v in node[:5]:
+            _find_fields(v, needles, out, depth + 1)
 
 
 def run_audit(client):
@@ -236,16 +235,23 @@ def run_audit(client):
         parsed = client.call(probe["method"], params)
         time.sleep(RATE_DELAY_SEC)
         verdict, code, desc, data = _classify(parsed)
-        results.append({**meta, "verdict": verdict, "code": code, "detail": desc})
+        row = {**meta, "verdict": verdict, "code": code, "detail": desc}
 
         if verdict == "OK_HAS_DATA":
-            for key, names in (("property_id", ("id", "property_id", "propertyID")),
-                               ("reservation_id", ("id", "reservation_id", "reservationID")),
-                               ("contact_id", ("id", "contact_id", "contactID"))):
+            row["sample"] = json.dumps(data)[:1200]
+            hi = {}
+            _find_fields(data, ("agent", "referr", "sales", "commission", "status", "convert"), hi)
+            if hi:
+                row["highlights"] = hi
+            for key, names in (("property_id", ("property_id", "propertyID")),
+                               ("confirmation_id", ("confirmation_id", "confirmationID")),
+                               ("reservation_id", ("reservation_id", "reservationID", "id"))):
                 if key not in discovered:
                     val = _extract_id(data, *names)
                     if val:
                         discovered[key] = val
+        results.append(row)
+
         if verdict == "IP_BLOCKED":
             results[-1]["detail"] = desc + "  <-- allow-list this IP in PartnerX and re-run"
             break
@@ -256,7 +262,7 @@ def print_report(result):
     icon = {"OK_HAS_DATA": "[DATA]", "OK_EMPTY": "[ ok ]", "ERROR": "[ERR ]",
             "IP_BLOCKED": "[IP! ]", "SKIPPED_NEED": "[skip]", "TRANSPORT_ERR": "[NET ]"}
     print("\n" + "=" * 78)
-    print(" STREAMLINE VRS API -- READ-ONLY CAPABILITY AUDIT")
+    print(" STREAMLINE VRS API -- READ-ONLY AUDIT (real method names)")
     print("=" * 78)
     last = None
     for r in result["results"]:
@@ -266,8 +272,12 @@ def print_report(result):
         tag = icon.get(r["verdict"], "[????]")
         line = f"  {tag} {r['method']:<26} {r.get('code','')}"
         if r.get("detail"):
-            line += f"  {r['detail'][:60]}"
+            line += f"  {str(r['detail'])[:60]}"
         print(line)
         print(f"         -> {r['note']}")
-    print("\n Discovered sample ids:", result["discovered"] or "(none)")
+        if r.get("highlights"):
+            print(f"         KEY FIELDS: {r['highlights']}")
+        if r.get("sample"):
+            print(f"         sample: {r['sample'][:400]}")
+    print("\n Discovered ids:", result["discovered"] or "(none)")
     print("=" * 78 + "\n")
