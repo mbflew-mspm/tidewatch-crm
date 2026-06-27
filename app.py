@@ -127,12 +127,14 @@ def render_dashboard(d):
     for i, r in enumerate(reps):
         initials = "".join(p[0] for p in str(r["agent"]).split()[:2]).upper()
         w = int(100 * r.get("revenue", 0) / max_rev)
+        cr = f"{r['close_rate']}%" if r.get("close_rate") is not None else "—"
         rows += f"""<tr>
           <td class="rep"><span class="av">{initials}</span>{r['agent']}</td>
           <td class="num">{r['bookings']}</td>
           <td><div class="bar"><div class="fill" style="width:{w}%"></div></div></td>
           <td class="num">{_money(r['revenue'])}</td>
-          <td class="num dim">{_money(r['avg_booking'])}</td></tr>"""
+          <td class="num dim">{_money(r['avg_booking'])}</td>
+          <td class="num">{cr}</td></tr>"""
 
     src = "".join(f"<li><span>{s['source']}</span><b>{s['count']}</b></li>" for s in sources)
 
@@ -184,8 +186,9 @@ def render_dashboard(d):
     <div class="c"><div class="l">Close rate</div><div class="v">{f.get('team_close_rate_pct',0)}%</div><div class="h">booked vs leads received</div></div>
   </div>
   <h2>Reservationist leaderboard · by revenue</h2>
-  <table><thead><tr><th>Rep</th><th>Bookings</th><th>Revenue</th><th></th><th>Avg</th></tr></thead>
-  <tbody>{rows or '<tr><td colspan=5 class="dim">No data yet — sync running.</td></tr>'}</tbody></table>
+  <table><thead><tr><th>Rep</th><th>Bookings</th><th>Revenue</th><th></th><th>Avg</th><th>Close</th></tr></thead>
+  <tbody>{rows or '<tr><td colspan=6 class="dim">No data yet — sync running.</td></tr>'}</tbody></table>
+  <div class="foot">Per-rep close rate shows only where a rep's own leads are attributed in Streamline; "—" means their open/lost leads aren't tagged to them yet (fixable with consistent lead assignment).</div>
   <h2>Top lead sources (inquiries)</h2>
   <ul class="src">{src or '<li class="dim">No data yet.</li>'}</ul>
   <div class="foot">Live from Streamline. Backfill in progress — numbers grow as the sync completes.</div>

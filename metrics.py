@@ -52,7 +52,7 @@ def compute(conn, period="all"):
         "SELECT sales_agent, type_name, revenue, creation_date, source FROM reservations"
     ).fetchall()
 
-    reps, sources, inquiries = {}, {}, 0
+    reps, sources, inquiries, rep_inq = {}, {}, 0, {}
     for agent, type_name, revenue, cd, source in rows:
         if start is not None:
             d = _parse_date(cd)
@@ -62,6 +62,8 @@ def compute(conn, period="all"):
             inquiries += 1
             key = source or "(unknown)"
             sources[key] = sources.get(key, 0) + 1
+            if agent:
+                rep_inq[agent] = rep_inq.get(agent, 0) + 1
         elif agent:
             r = reps.setdefault(agent, {"agent": agent, "bookings": 0, "revenue": 0.0})
             r["bookings"] += 1
@@ -71,6 +73,12 @@ def compute(conn, period="all"):
     for r in per_rep:
         r["revenue"] = round(r["revenue"])
         r["avg_booking"] = round(r["revenue"] / r["bookings"]) if r["bookings"] else 0
+        # Per-rep close rate only where the rep's own leads are attributed
+        # (>=5 attributed inquiries); otherwise None -> shown as "—".
+        oi = rep_inq.get(r["agent"], 0)
+        r["open_inquiries"] = oi
+        r["close_rate"] = (round(100 * r["bookings"] / (r["bookings"] + oi), 1)
+                           if oi >= 5 else None)
 
     rep_bookings = sum(r["bookings"] for r in per_rep)
     rep_revenue = sum(r["revenue"] for r in per_rep)
