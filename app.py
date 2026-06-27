@@ -56,10 +56,10 @@ def require_admin(authorization):
         raise HTTPException(401, "unauthorized")
 
 
-def _metrics():
+def _metrics(period="all"):
     conn = sqlite3.connect(DB_PATH)
     try:
-        return metrics.compute(conn)
+        return metrics.compute(conn, period)
     finally:
         conn.close()
 
@@ -94,13 +94,13 @@ def audit(authorization: str = Header(default=None)):
 
 
 @app.get("/api/metrics")
-def api_metrics(_: bool = Depends(require_login)):
-    return JSONResponse(_metrics())
+def api_metrics(period: str = "all", _: bool = Depends(require_login)):
+    return JSONResponse(_metrics(period))
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(_: bool = Depends(require_login)):
-    return HTMLResponse(render_dashboard(_metrics()))
+def dashboard(period: str = "all", _: bool = Depends(require_login)):
+    return HTMLResponse(render_dashboard(_metrics(period)))
 
 
 def _money(n):
@@ -116,6 +116,12 @@ def render_dashboard(d):
     sources = d.get("sources", [])
     max_rev = max([r.get("revenue", 0) for r in reps], default=1) or 1
     avg = (f.get("rep_revenue", 0) / f["rep_bookings"]) if f.get("rep_bookings") else 0
+    periods = [("month", "This month"), ("quarter", "This quarter"),
+               ("year", "This year"), ("all", "All time")]
+    cur = d.get("period", "all")
+    tabs = "".join(f'<a href="/?period={p}" class="tab{" on" if cur == p else ""}">{lbl}</a>'
+                   for p, lbl in periods)
+    plabel = dict(periods).get(cur, "All time")
 
     rows = ""
     for i, r in enumerate(reps):
@@ -163,14 +169,19 @@ def render_dashboard(d):
   ul.src li {{ display:flex; justify-content:space-between; padding:10px 14px; border-bottom:1px solid var(--line); font-size:14px; }}
   ul.src li:last-child {{ border-bottom:none; }}
   .foot {{ color:var(--dim); font-size:12px; margin-top:20px; }}
+  .tabs {{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:18px; }}
+  .tab {{ padding:6px 12px; border:1px solid var(--line); border-radius:8px; font-size:13px;
+          color:var(--dim); text-decoration:none; background:var(--card); }}
+  .tab.on {{ color:#fff; background:var(--accent); border-color:var(--accent); }}
 </style></head><body><div class="wrap">
   <h1>Tidewatch sales intelligence</h1>
-  <div class="sub">Reservationist scoreboard · rep-worked business · last sync {str(d.get('last_sync') or '')[:19].replace('T',' ')} UTC</div>
+  <div class="sub">Reservationist scoreboard · rep-worked business · {plabel} · last sync {str(d.get('last_sync') or '')[:19].replace('T',' ')} UTC</div>
+  <div class="tabs">{tabs}</div>
   <div class="cards">
     <div class="c"><div class="l">Rep-worked revenue</div><div class="v">{_money(f.get('rep_revenue'))}</div><div class="h">{f.get('rep_bookings',0)} bookings</div></div>
     <div class="c"><div class="l">Avg booking value</div><div class="v">{_money(avg)}</div><div class="h">across reps</div></div>
     <div class="c"><div class="l">Open inquiries</div><div class="v">{f.get('inquiries_open',0)}</div><div class="h">lead pool</div></div>
-    <div class="c"><div class="l">Team close rate</div><div class="v">{f.get('team_close_rate_pct',0)}%</div><div class="h">approx</div></div>
+    <div class="c"><div class="l">Close rate</div><div class="v">{f.get('team_close_rate_pct',0)}%</div><div class="h">booked vs leads received</div></div>
   </div>
   <h2>Reservationist leaderboard · by revenue</h2>
   <table><thead><tr><th>Rep</th><th>Bookings</th><th>Revenue</th><th></th><th>Avg</th></tr></thead>
