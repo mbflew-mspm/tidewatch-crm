@@ -27,7 +27,8 @@ import time
 from streamline import StreamlineClient, TokenStore
 
 DB_PATH = os.environ.get("DB_PATH", "tidewatch.db")
-LIMIT = int(os.environ.get("SYNC_LIMIT", "80"))
+LIMIT = int(os.environ.get("SYNC_LIMIT", "100000"))
+SKIP_CACHED = os.environ.get("SKIP_CACHED", "1") == "1"
 DETAIL_FLAGS = {
     "show_agents_referrer_information": "1",
     "show_commission_information": "1",
@@ -174,15 +175,22 @@ def main():
         conn.execute("INSERT INTO sync_state(k,v) VALUES(?,?) "
                      "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)))
 
-    todo = list(dict.fromkeys(inq_ids[:LIMIT] + sta_ids[:LIMIT]))
-    print(f"Fetching detail for {len(todo)} reservations (capped at {LIMIT} each) ...")
+    all_ids = list(dict.fromkeys(inq_ids + sta_ids))
+    if SKIP_CACHED:
+        have = {r[0] for r in conn.execute("SELECT confirmation_id FROM reservations")}
+        all_ids = [c for c in all_ids if c not in have]
+    todo = all_ids[:LIMIT]
+    print(f"Fetching detail for {len(todo)} new reservations ...", flush=True)
     fetched = 0
-    for cid in todo:
+    for i, cid in enumerate(todo, 1):
         res = fetch_detail(client, cid)
         time.sleep(0.8)  # under 100/min
         if res:
             upsert(conn, res)
             fetched += 1
+        if i % 100 == 0:
+            conn.commit()
+            print(f"  ...{i}/{len(todo)} fetched", flush=True)
 
     conn.commit()
     conn.execute("INSERT INTO sync_state(k,v) VALUES('last_sync',?) "
