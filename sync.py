@@ -88,8 +88,8 @@ def _num(v):
         return None
 
 
-def fetch_pipeline(client, params):
-    parsed = client.call("GetReservationsFiltered", params)
+def fetch_pipeline(client, method, params):
+    parsed = client.call(method, params)
     data = _data(parsed)
     ids = data.get("confirmation_id") if isinstance(data, dict) else None
     if isinstance(ids, list):
@@ -163,14 +163,18 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
 
-    print("Pulling inquiry funnel (type_name=INQR) ...")
-    inq_ids = fetch_pipeline(client, {"type_name": "INQR"})
+    print("Listing inquiry funnel: GetReservations(type_name=INQR) ...")
+    inq_ids = fetch_pipeline(client, "GetReservations", {"type_name": "INQR"})
     print(f"  -> {len(inq_ids)} inquiries")
-    print(f"Pulling bookings (arriving_after={arriving_after}) ...")
-    book_ids = fetch_pipeline(client, {"arriving_after": arriving_after})
-    print(f"  -> {len(book_ids)} reservations")
+    print("Listing direct bookings: GetReservations(type_name=STA) ...")
+    sta_ids = fetch_pipeline(client, "GetReservations", {"type_name": "STA"})
+    print(f"  -> {len(sta_ids)} direct (STA) reservations")
 
-    todo = list(dict.fromkeys(inq_ids[:LIMIT] + book_ids[:LIMIT]))
+    for k, v in (("inquiries_total", len(inq_ids)), ("direct_total", len(sta_ids))):
+        conn.execute("INSERT INTO sync_state(k,v) VALUES(?,?) "
+                     "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)))
+
+    todo = list(dict.fromkeys(inq_ids[:LIMIT] + sta_ids[:LIMIT]))
     print(f"Fetching detail for {len(todo)} reservations (capped at {LIMIT} each) ...")
     fetched = 0
     for cid in todo:
