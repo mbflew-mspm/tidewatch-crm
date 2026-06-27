@@ -150,6 +150,31 @@ def upsert(conn, res):
     )
 
 
+def run_incremental(client, conn):
+    """Cheap refresh: only NEW inquiries + reservations changed since yesterday."""
+    since = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    inq_ids = fetch_pipeline(client, "GetReservations", {"type_name": "INQR"})
+    have = {r[0] for r in conn.execute("SELECT confirmation_id FROM reservations")}
+    new_inq = [c for c in inq_ids if c not in have]
+    changed = fetch_pipeline(client, "GetReservationsFiltered", {"modified_since": since})
+    todo = list(dict.fromkeys(new_inq + changed))[:500]
+    print(f"Incremental: {len(new_inq)} new inquiries, {len(changed)} changed since {since}; "
+          f"fetching {len(todo)}", flush=True)
+    n = 0
+    for cid in todo:
+        res = fetch_detail(client, cid)
+        time.sleep(0.8)
+        if res:
+            upsert(conn, res)
+            n += 1
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for k, v in (("inquiries_total", str(len(inq_ids))), ("last_sync", now)):
+        conn.execute("INSERT INTO sync_state(k,v) VALUES(?,?) "
+                     "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, v))
+    conn.commit()
+    print(f"Incremental done: {n} upserted at {now}", flush=True)
+
+
 def main():
     if not os.environ.get("STREAMLINE_TOKEN_KEY"):
         raise SystemExit("Missing STREAMLINE_TOKEN_KEY / STREAMLINE_TOKEN_SECRET")
@@ -163,6 +188,11 @@ def main():
 
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
+
+    if os.environ.get("SYNC_MODE") == "incremental":
+        run_incremental(client, conn)
+        conn.close()
+        return
 
     print("Listing inquiry funnel: GetReservations(type_name=INQR) ...")
     inq_ids = fetch_pipeline(client, "GetReservations", {"type_name": "INQR"})
