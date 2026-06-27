@@ -88,15 +88,13 @@ def _num(v):
         return None
 
 
-def fetch_pipeline(client, arriving_after):
-    parsed = client.call("GetReservationsFiltered", {"arriving_after": arriving_after})
+def fetch_pipeline(client, params):
+    parsed = client.call("GetReservationsFiltered", params)
     data = _data(parsed)
     ids = data.get("confirmation_id") if isinstance(data, dict) else None
     if isinstance(ids, list):
         return [i for i in ids if i]
-    if ids:
-        return [ids]
-    return []
+    return [ids] if ids else []
 
 
 def fetch_detail(client, cid):
@@ -165,22 +163,22 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
 
-    print(f"Pipeline: GetReservationsFiltered(arriving_after={arriving_after}) ...")
-    cids = fetch_pipeline(client, arriving_after)
-    print(f"  -> {len(cids)} reservations in pipeline; fetching detail for up to {LIMIT}")
+    print("Pulling inquiry funnel (type_name=INQR) ...")
+    inq_ids = fetch_pipeline(client, {"type_name": "INQR"})
+    print(f"  -> {len(inq_ids)} inquiries")
+    print(f"Pulling bookings (arriving_after={arriving_after}) ...")
+    book_ids = fetch_pipeline(client, {"arriving_after": arriving_after})
+    print(f"  -> {len(book_ids)} reservations")
 
+    todo = list(dict.fromkeys(inq_ids[:LIMIT] + book_ids[:LIMIT]))
+    print(f"Fetching detail for {len(todo)} reservations (capped at {LIMIT} each) ...")
     fetched = 0
-    field_keys_dumped = False
-    for cid in cids[:LIMIT]:
+    for cid in todo:
         res = fetch_detail(client, cid)
         time.sleep(0.8)  # under 100/min
-        if not res:
-            continue
-        if not field_keys_dumped:
-            print("  FIELDS AVAILABLE on a reservation:", sorted(res.keys()))
-            field_keys_dumped = True
-        upsert(conn, res)
-        fetched += 1
+        if res:
+            upsert(conn, res)
+            fetched += 1
 
     conn.commit()
     conn.execute("INSERT INTO sync_state(k,v) VALUES('last_sync',?) "
@@ -189,21 +187,23 @@ def main():
     conn.commit()
 
     print(f"\nStored {fetched} reservations in {DB_PATH}.\n")
-    print("Status decode (status_code / type_name -> count, revenue):")
-    for sc, tn, n, rev in conn.execute(
-            """SELECT status_code, type_name, COUNT(*), ROUND(SUM(COALESCE(revenue,0)),0)
-               FROM reservations GROUP BY status_code, type_name ORDER BY 3 DESC"""):
-        print(f"  status_code {sc:<4} type {str(tn):<10} {n:>4} recs   ${rev:,.0f}")
+    inq = conn.execute("SELECT COUNT(*) FROM reservations WHERE type_name='INQR'").fetchone()[0]
+    direct = conn.execute("SELECT COUNT(*) FROM reservations "
+                          "WHERE type_name!='INQR' AND sales_agent IS NOT NULL").fetchone()[0]
+    ota = conn.execute("SELECT COUNT(*) FROM reservations "
+                       "WHERE type_name!='INQR' AND sales_agent IS NULL").fetchone()[0]
+    print("Cached mix:")
+    print(f"  inquiries (INQR):            {inq}")
+    print(f"  rep-worked bookings:         {direct}")
+    print(f"  OTA self-bookings (no rep):  {ota}")
 
-    assigned, total = conn.execute(
-        "SELECT SUM(sales_agent IS NOT NULL), COUNT(*) FROM reservations").fetchone()
-    print(f"\nAgent assignment: {assigned or 0} of {total} have a sales_agent.")
-    print("\nPer-reservationist snapshot:")
-    for agent, n, rev in conn.execute(
-            """SELECT COALESCE(sales_agent,'(unassigned)') agent, COUNT(*) n,
-                      ROUND(SUM(COALESCE(revenue,0)),0) rev
-               FROM reservations GROUP BY agent ORDER BY n DESC"""):
-        print(f"  {agent:<22} {n:>4} recs   revenue ${rev:,.0f}")
+    print("\nPer-reservationist (rep-worked bookings):")
+    for agent, n, rev, comm in conn.execute(
+            """SELECT sales_agent, COUNT(*) n, ROUND(SUM(COALESCE(revenue,0)),0) rev,
+                      ROUND(SUM(COALESCE(mgmt_commission_amount,0)),0) comm
+               FROM reservations WHERE sales_agent IS NOT NULL AND type_name!='INQR'
+               GROUP BY sales_agent ORDER BY rev DESC"""):
+        print(f"  {agent:<22} {n:>3} bookings   ${rev:,.0f} rev   ${comm:,.0f} comm")
     conn.close()
 
 
