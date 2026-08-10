@@ -55,6 +55,14 @@ async def public_pace_host(request, call_next):
                 return HTMLResponse(render_pace(pace.compute(conn), public=True))
             finally:
                 conn.close()
+        if path == "/scorecard-history.csv":
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                from fastapi.responses import PlainTextResponse
+                return PlainTextResponse(pace.scorecard_history_csv(conn),
+                                         media_type="text/csv")
+            finally:
+                conn.close()
         if path == "/health":
             return JSONResponse({"ok": True})
         return HTMLResponse("Not found", status_code=404)

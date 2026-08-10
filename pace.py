@@ -280,6 +280,70 @@ def compute(conn, as_of=None):
     }
 
 
+def _window_slice(res, w_start, w_end, cutoff):
+    """Nights + prorated revenue inside [w_start, w_end) from bookings
+    created on/before cutoff."""
+    nights = 0
+    revenue = 0.0
+    for booked, s, e, rate, _bk in res:
+        if booked > cutoff:
+            continue
+        lo, hi = max(s, w_start), min(e, w_end)
+        n = (hi - lo).days
+        if n > 0:
+            nights += n
+            revenue += n * rate
+    return nights, revenue
+
+
+def scorecard_metrics(res, units, as_of):
+    """The three scorecard numbers for one as-of date, over the window
+    'current month + next two months' (matches the old H/I columns):
+      occ_ty   — occupancy % on the books for the window
+      occ_ly   — same window last year, as of the same date last year
+      pace_pct — RevPAR pace: TY per-unit-night revenue / LY same-time, x100
+    """
+    w_start = datetime.date(as_of.year, as_of.month, 1)
+    w_end = _month_add(w_start, 3)
+    ly_start = datetime.date(w_start.year - 1, w_start.month, 1)
+    ly_end = _month_add(ly_start, 3)
+    ly_as_of = as_of - datetime.timedelta(days=365)
+
+    avail = units * (w_end - w_start).days
+    avail_ly = units * (ly_end - ly_start).days
+    n_ty, r_ty = _window_slice(res, w_start, w_end, as_of)
+    n_ly, r_ly = _window_slice(res, ly_start, ly_end, ly_as_of)
+
+    revpar_ty = r_ty / avail if avail else 0
+    revpar_ly = r_ly / avail_ly if avail_ly else 0
+    return {
+        "occ_ty": round(100 * n_ty / avail, 1) if avail else 0,
+        "occ_ly": round(100 * n_ly / avail_ly, 1) if avail_ly else 0,
+        "pace_pct": round(100 * revpar_ty / revpar_ly, 1) if revpar_ly else None,
+    }
+
+
+def scorecard_history_csv(conn):
+    """One row per Wednesday (the scorecard's weekly cadence) from Jan 2026 to
+    today. Starts 2026 because the LY comparison needs stay data back to Jan
+    2025, which is where our pull begins."""
+    res = _load(conn)
+    st = dict(conn.execute("SELECT k, v FROM pace_state").fetchall())
+    units = int(st.get("active_units", 0) or 0) or 1
+    today = datetime.date.today()
+    d = datetime.date(2026, 1, 1)
+    while d.weekday() != 2:  # Wednesday
+        d += datetime.timedelta(days=1)
+    lines = ["Week,Occupancy booked next 3 months (%),Same point last year (%),"
+             "Pace vs last year (%)"]
+    while d <= today:
+        m = scorecard_metrics(res, units, d)
+        lines.append(f"{d.strftime('%m/%d/%Y')},{m['occ_ty']},{m['occ_ly']},"
+                     f"{m['pace_pct'] if m['pace_pct'] is not None else ''}")
+        d += datetime.timedelta(days=7)
+    return "\n".join(lines) + "\n"
+
+
 def snapshot(conn, report):
     for m in report["months"]:
         conn.execute(
