@@ -42,6 +42,25 @@ app = FastAPI(title="Tidewatch Sales Intelligence")
 security = HTTPBasic()
 
 
+@app.middleware("http")
+async def public_pace_host(request, call_next):
+    """pace.<ip>.sslip.io is a separate, login-free site that serves ONLY the
+    pace page. Nothing else (scoreboard, APIs) is reachable on that hostname."""
+    host = request.headers.get("host", "").split(":")[0]
+    if host.startswith("pace."):
+        path = request.url.path
+        if path in ("/", "/pace"):
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                return HTMLResponse(render_pace(pace.compute(conn), public=True))
+            finally:
+                conn.close()
+        if path == "/health":
+            return JSONResponse({"ok": True})
+        return HTMLResponse("Not found", status_code=404)
+    return await call_next(request)
+
+
 def require_login(creds: HTTPBasicCredentials = Depends(security)):
     if not DASH_PASSWORD:
         raise HTTPException(503, "Dashboard password not configured (set DASH_PASSWORD).")
@@ -122,7 +141,7 @@ def pace_page(_: bool = Depends(require_login)):
         conn.close()
 
 
-def render_pace(d):
+def render_pace(d, public=False):
     import datetime as _dt
     rows = ""
     crows = ""
@@ -199,7 +218,7 @@ def render_pace(d):
   .explain p {{ margin:6px 0; }}
   .explain li {{ margin:4px 0; }}
 </style></head><body><div class="wrap">
-  <a class="back" href="/">← back to scoreboard</a>
+  {'' if public else '<a class="back" href="/">← back to scoreboard</a>'}
   <h1>Booking pace — are we ahead of last year?</h1>
   <div class="sub">Updated {d['as_of']} · compares today's bookings with the same point in time last year</div>
 
