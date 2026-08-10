@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS pace_reservations (
   type_name TEXT, status_code INTEGER, unit_id INTEGER,
   creation_date TEXT, startdate TEXT, enddate TEXT,
   days_number INTEGER, price_total REAL, hear_about TEXT,
+  maketype TEXT,
   pulled_at TEXT
 );
 CREATE TABLE IF NOT EXISTS pace_snapshots (
@@ -128,19 +129,21 @@ def pull(client, conn):
             conn.execute(
                 """INSERT INTO pace_reservations
                    (confirmation_id, type_name, status_code, unit_id, creation_date,
-                    startdate, enddate, days_number, price_total, hear_about, pulled_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    startdate, enddate, days_number, price_total, hear_about, maketype,
+                    pulled_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(confirmation_id) DO UPDATE SET
                     type_name=excluded.type_name, status_code=excluded.status_code,
                     unit_id=excluded.unit_id, creation_date=excluded.creation_date,
                     startdate=excluded.startdate, enddate=excluded.enddate,
                     days_number=excluded.days_number, price_total=excluded.price_total,
-                    hear_about=excluded.hear_about, pulled_at=excluded.pulled_at""",
+                    hear_about=excluded.hear_about, maketype=excluded.maketype,
+                    pulled_at=excluded.pulled_at""",
                 (_num(r.get("confirmation_id")), _s(r.get("type_name")),
                  _num(r.get("status_code")), _num(r.get("unit_id")),
                  _s(r.get("creation_date")), _s(r.get("startdate")), _s(r.get("enddate")),
                  _num(r.get("days_number")), _num(r.get("price_total")),
-                 _s(r.get("hear_about_name")),
+                 _s(r.get("hear_about_name")), _s(r.get("maketype_name")),
                  datetime.datetime.now(datetime.timezone.utc).isoformat()))
             n_rows += 1
         conn.commit()
@@ -161,12 +164,25 @@ def pull(client, conn):
 
 
 # ---------------------------------------------------------------- compute
+OTA_TYPES = {"SC-ABnB", "HAFamOLB", "SC-Booking.com", "HomeToGo", "BOOST (PDWTA)", "PGO"}
+
+
+def _bucket(type_name, maketype):
+    """Who produced the booking: our reservationists ('team'), guests
+    self-booking the website ('web'), or the OTA channels ('ota')."""
+    if (type_name or "") in OTA_TYPES:
+        return "ota"
+    if (maketype or "").upper().startswith("A"):  # 'A' = Admin Reservation (rep-made)
+        return "team"
+    return "web"
+
+
 def _load(conn):
     """Demand bookings only: no inquiries, no owner blocks, no cancelled."""
     out = []
-    for cid, tn, sc, cd, sd, ed, dn, pt in conn.execute(
-            """SELECT confirmation_id, type_name, status_code, creation_date,
-                      startdate, enddate, days_number, price_total
+    for tn, sc, cd, sd, ed, pt, mk in conn.execute(
+            """SELECT type_name, status_code, creation_date,
+                      startdate, enddate, price_total, maketype
                FROM pace_reservations
                WHERE type_name NOT IN ('INQR','OWN','MaintenanceBlock')
                  AND (status_code IS NULL OR status_code != 9)"""):
@@ -176,20 +192,22 @@ def _load(conn):
             continue
         nights = (e - s).days
         rate = (pt or 0) / nights if nights else 0
-        out.append((booked, s, e, rate))
+        out.append((booked, s, e, rate, _bucket(tn, mk)))
     return out
 
 
-def _month_slice(res, month_first, cutoff, created_after=None):
+def _month_slice(res, month_first, cutoff, created_after=None, bucket=None):
     """Nights + prorated revenue falling inside stay-month, from bookings
     created on/before cutoff (and optionally after created_after)."""
     m_end = _month_add(month_first, 1)
     nights = 0
     revenue = 0.0
-    for booked, s, e, rate in res:
+    for booked, s, e, rate, bk in res:
         if booked > cutoff:
             continue
         if created_after and booked <= created_after:
+            continue
+        if bucket and bk != bucket:
             continue
         lo, hi = max(s, month_first), min(e, m_end)
         n = (hi - lo).days
@@ -227,27 +245,36 @@ def compute(conn, as_of=None):
             pickups[pd] = {"nights": pn, "revenue": round(pr),
                            "ly_nights": ln, "ly_revenue": round(lr)}
 
+        channels = {}
+        for b in ("team", "web", "ota"):
+            bn, _br = _month_slice(res, mf, as_of, bucket=b)
+            bln, _blr = _month_slice(res, mf_ly, ly_as_of, bucket=b)
+            channels[b] = {"nights": bn, "ly_nights": bln}
+
         months.append({
             "month": mf.isoformat()[:7],
             "days_out": days_out,
             "ty": {"nights": n_ty, "revenue": round(r_ty),
                    "occ_pct": round(100 * n_ty / avail, 1),
-                   "revpar": round(r_ty / avail, 2)},
+                   "revpar": round(r_ty / avail, 2),
+                   "adr": round(r_ty / n_ty) if n_ty else 0},
             "ly_same_time": {"nights": n_ly, "revenue": round(r_ly),
                              "occ_pct": round(100 * n_ly / avail_ly, 1),
-                             "revpar": round(r_ly / avail_ly, 2)},
+                             "revpar": round(r_ly / avail_ly, 2),
+                             "adr": round(r_ly / n_ly) if n_ly else 0},
             "ly_final": {"occ_pct": round(100 * n_lyf / avail_ly, 1),
                          "revpar": round(r_lyf / avail_ly, 2)},
             "pickup": pickups,
+            "channels": channels,
         })
     return {
         "as_of": as_of.isoformat(),
         "active_units": units,
         "last_pull": st.get("last_pull"),
         "caveats": [
+            "Money = the homes' GROSS booking revenue (guest total incl. fees), not TideWatch's commission income.",
             "Denominator uses CURRENT active unit count for both years.",
             "Last-year same-time is reconstructed from booked-on dates; bookings that later cancelled aren't counted (slightly understates LY pace).",
-            "Revenue = price_total (incl. fees) prorated per night.",
         ],
         "months": months,
     }
@@ -286,6 +313,10 @@ def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
+    try:  # migration for tables created before the maketype column existed
+        conn.execute("ALTER TABLE pace_reservations ADD COLUMN maketype TEXT")
+    except sqlite3.OperationalError:
+        pass
     if mode in ("pull", "all"):
         client = StreamlineClient(TokenStore(
             os.environ.get("TOKEN_STORE_PATH", "tokens.json"),

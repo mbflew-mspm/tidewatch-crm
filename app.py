@@ -125,6 +125,7 @@ def pace_page(_: bool = Depends(require_login)):
 def render_pace(d):
     import datetime as _dt
     rows = ""
+    crows = ""
     ahead = behind = 0
     for m in d["months"]:
         ty, ly, lyf = m["ty"], m["ly_same_time"], m["ly_final"]
@@ -142,9 +143,20 @@ def render_pace(d):
           <td class="mo">{month_name}<br><span class="dim">{when}</span></td>
           <td>{badge}</td>
           <td class="num">{ty['occ_pct']}% full<br><span class="dim">last year now: {ly['occ_pct']}%</span></td>
+          <td class="num">${ty.get('adr',0):,.0f}<br><span class="dim">last year now: ${ly.get('adr',0):,.0f}</span></td>
           <td class="num">${ty['revpar']:.0f}<br><span class="dim">last year now: ${ly['revpar']:.0f}</span></td>
           <td class="num dim">{lyf['occ_pct']}% full</td>
           <td class="num">{p['nights']} nights<br><span class="dim">last year: {p['ly_nights']}</span></td></tr>"""
+        ch = m.get("channels") or {}
+        cells = ""
+        for b in ("team", "web", "ota"):
+            c = ch.get(b) or {}
+            n, l = c.get("nights", 0), c.get("ly_nights", 0)
+            k = "up" if n >= l else "down"
+            mark = "▲" if n >= l else "▼"
+            cells += (f'<td class="num">{n} <span class="{k}">{mark}</span>'
+                      f'<br><span class="dim">last year: {l}</span></td>')
+        crows += f'<tr><td class="mo">{month_name}</td>{cells}</tr>'
 
     total = ahead + behind
     verdict_cls = "up" if ahead >= behind else "down"
@@ -176,6 +188,10 @@ def render_pace(d):
   .badge {{ font-size:12px; font-weight:600; padding:4px 10px; border-radius:999px; white-space:nowrap; }}
   .badge.up {{ background:#e2f4ec; color:var(--accent); }}
   .badge.down {{ background:#fae8e5; color:var(--red); }}
+  span.up {{ color:var(--accent); font-weight:600; }}
+  span.down {{ color:var(--red); font-weight:600; }}
+  h2.sect {{ font-size:16px; font-weight:600; margin:26px 0 4px; }}
+  .sectsub {{ color:var(--dim); font-size:13px; margin-bottom:10px; }}
   .explain {{ background:var(--card); border:1px solid var(--line); border-radius:12px;
               padding:20px 24px; margin-top:24px; font-size:14px; line-height:1.7; }}
   .explain h2 {{ font-size:15px; margin:18px 0 6px; }}
@@ -193,9 +209,21 @@ def render_pace(d):
   <table>
     <thead><tr>
       <th>Month</th><th>Are we ahead?</th><th>How full is it<br>booked so far?</th>
-      <th>Money per home,<br>per night</th><th>Where last year<br>ended up</th>
-      <th>New bookings,<br>last 2 weeks</th></tr></thead>
-    <tbody>{rows or '<tr><td colspan=6 class="dim">No data yet.</td></tr>'}</tbody>
+      <th>Average price<br>per booked night</th><th>Money per home,<br>per night</th>
+      <th>Where last year<br>ended up</th><th>New bookings,<br>last 2 weeks</th></tr></thead>
+    <tbody>{rows or '<tr><td colspan=7 class="dim">No data yet.</td></tr>'}</tbody>
+  </table>
+
+  <h2 class="sect">Who's bringing in the bookings?</h2>
+  <div class="sectsub">Nights booked so far for each month, split by who made the booking —
+  compared with the same point last year. This is the cleanest view of how the
+  <b>team</b> and our <b>marketing</b> are doing, separate from prices.</div>
+  <table>
+    <thead><tr>
+      <th>Month</th><th>Booked by our<br>reservationists</th>
+      <th>Guests booking on<br>our website</th>
+      <th>Booking sites<br>(Airbnb, Vrbo, etc.)</th></tr></thead>
+    <tbody>{crows or '<tr><td colspan=4 class="dim">No data yet.</td></tr>'}</tbody>
   </table>
 
   <div class="explain">
@@ -220,6 +248,9 @@ def render_pace(d):
       <li><b>How full is it booked so far?</b> — Out of all the nights we could possibly
         rent that month (every home × every night), the percent already booked. The small
         gray number is where we stood at this same point last year.</li>
+      <li><b>Average price per booked night</b> — Of the nights that ARE booked, the
+        average price guests are paying per night. This is the "rates" side: it mostly
+        moves with the market and our pricing, not with team effort.</li>
       <li><b>Money per home, per night</b> — Total booking money for the month, divided by
         every home and every night we have. This is the fairest single number: it can't be
         fooled by us adding or removing homes, and it captures both "how full" and "at what
@@ -231,6 +262,30 @@ def render_pace(d):
         just the past 14 days, next to the same 14-day window last year. This is our speed:
         even a month that's behind can be catching up fast.</li>
     </ul>
+
+    <h2>How do I tell if it's the TEAM or just the MARKET?</h2>
+    <p>Use the two middle columns together. <b>"How full"</b> is mostly people-driven —
+    marketing bringing in leads and reservationists closing them. <b>"Average price per
+    booked night"</b> is mostly market-driven. So:</p>
+    <ul>
+      <li>Fuller than last year AND prices held or up → the team and marketing are
+        genuinely winning.</li>
+      <li>Fuller than last year but prices down → good sign IF prices fell across the whole
+        market too; a warning sign if we simply priced below everyone (then it's discounts
+        doing the work, not people).</li>
+      <li>Less full but prices way up → we may be priced ahead of the market; not the
+        team's fault.</li>
+      <li>Less full AND prices down → a real demand problem worth digging into.</li>
+    </ul>
+    <p>The <b>"Who's bringing in the bookings?"</b> table is the most direct people-measure:
+    reservationist-booked nights = the sales team, website bookings = our marketing, and
+    booking-site nights = our listings on Airbnb/Vrbo. Each vs the same point last year.</p>
+
+    <h2>Whose money is this?</h2>
+    <p>The dollar figures are the <b>homes' gross booking revenue</b> — the full amount
+    guests pay, most of which belongs to the homeowners. TideWatch's own income is our
+    management commission (roughly a quarter of it) plus fees. We track the gross number
+    here because it's the cleanest measure of demand coming in.</p>
 
     <h2>Things to keep in mind</h2>
     <ul>
