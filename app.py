@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 import metrics
+import pace
 from streamline import StreamlineClient, TokenStore
 
 DB_PATH = os.environ.get("DB_PATH", "tidewatch.db")
@@ -103,6 +104,80 @@ def dashboard(period: str = "all", _: bool = Depends(require_login)):
     return HTMLResponse(render_dashboard(_metrics(period)))
 
 
+@app.get("/api/pace")
+def api_pace(_: bool = Depends(require_login)):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        return JSONResponse(pace.compute(conn))
+    finally:
+        conn.close()
+
+
+@app.get("/pace", response_class=HTMLResponse)
+def pace_page(_: bool = Depends(require_login)):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        return HTMLResponse(render_pace(pace.compute(conn)))
+    finally:
+        conn.close()
+
+
+def render_pace(d):
+    rows = ""
+    for m in d["months"]:
+        ty, ly, lyf = m["ty"], m["ly_same_time"], m["ly_final"]
+        p = m["pickup"][14]
+        occ_d = round(ty["occ_pct"] - ly["occ_pct"], 1)
+        rp_d = round(ty["revpar"] - ly["revpar"], 2)
+        cls = "up" if rp_d >= 0 else "down"
+        arrow = "▲" if rp_d >= 0 else "▼"
+        rows += f"""<tr>
+          <td class="mo">{m['month']}<span class="dim"> · {m['days_out']}d out</span></td>
+          <td class="num">{ty['occ_pct']}%<span class="dim"> vs {ly['occ_pct']}%</span></td>
+          <td class="num dim">{lyf['occ_pct']}%</td>
+          <td class="num">${ty['revpar']:.2f}<span class="dim"> vs ${ly['revpar']:.2f}</span></td>
+          <td class="num {cls}">{arrow} {abs(rp_d):.2f}</td>
+          <td class="num">{p['nights']}<span class="dim"> / {p['ly_nights']}</span></td></tr>"""
+
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tidewatch Pace</title>
+<style>
+  :root {{ --bg:#f6f6f4; --card:#fff; --ink:#23221f; --dim:#6c6a64; --line:#e7e5df;
+           --accent:#1D9E75; --red:#c0392b; }}
+  * {{ box-sizing:border-box; }}
+  body {{ font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+          background:var(--bg); color:var(--ink); margin:0; padding:24px; }}
+  .wrap {{ max-width:900px; margin:0 auto; }}
+  h1 {{ font-size:20px; font-weight:600; margin:0 0 2px; }}
+  .sub {{ color:var(--dim); font-size:13px; margin-bottom:20px; }}
+  a.back {{ font-size:13px; color:var(--dim); text-decoration:none; }}
+  table {{ width:100%; border-collapse:collapse; background:var(--card);
+           border:1px solid var(--line); border-radius:12px; overflow:hidden; font-size:14px; }}
+  th {{ text-align:right; font-weight:500; color:var(--dim); font-size:12px;
+        padding:10px 12px; border-bottom:1px solid var(--line); }}
+  th:first-child {{ text-align:left; }}
+  td {{ padding:12px; border-bottom:1px solid var(--line); }}
+  tr:last-child td {{ border-bottom:none; }}
+  .num {{ text-align:right; white-space:nowrap; }} .dim {{ color:var(--dim); font-size:12px; }}
+  .mo {{ font-weight:500; white-space:nowrap; }}
+  .up {{ color:var(--accent); font-weight:600; }} .down {{ color:var(--red); font-weight:600; }}
+  .foot {{ color:var(--dim); font-size:12px; margin-top:16px; line-height:1.6; }}
+</style></head><body><div class="wrap">
+  <a class="back" href="/">← scoreboard</a>
+  <h1>Booking pace</h1>
+  <div class="sub">On-the-books vs same time last year (equal days-to-arrival) ·
+    {d['active_units']} active units · as of {d['as_of']}</div>
+  <table>
+    <thead><tr><th>Stay month</th><th>Occ vs LY@</th><th>LY final</th>
+      <th>RevPAR vs LY@</th><th>RevPAR Δ</th><th>Pickup 14d (nts, TY/LY)</th></tr></thead>
+    <tbody>{rows or '<tr><td colspan=6 class="dim">No pace data yet — run pace.py.</td></tr>'}</tbody>
+  </table>
+  <div class="foot">"vs LY@" = last year's on-the-books at the same days-out, rebuilt from
+  booked-on dates. {' '.join(d['caveats'])}</div>
+</div></body></html>"""
+
+
 def _money(n):
     try:
         return "${:,.0f}".format(float(n or 0))
@@ -177,7 +252,7 @@ def render_dashboard(d):
   .tab.on {{ color:#fff; background:var(--accent); border-color:var(--accent); }}
 </style></head><body><div class="wrap">
   <h1>Tidewatch sales intelligence</h1>
-  <div class="sub">Reservationist scoreboard · rep-worked business · {plabel} · last sync {str(d.get('last_sync') or '')[:19].replace('T',' ')} UTC</div>
+  <div class="sub">Reservationist scoreboard · rep-worked business · {plabel} · last sync {str(d.get('last_sync') or '')[:19].replace('T',' ')} UTC · <a href="/pace" style="color:var(--accent);text-decoration:none;">booking pace →</a></div>
   <div class="tabs">{tabs}</div>
   <div class="cards">
     <div class="c"><div class="l">Rep-worked revenue</div><div class="v">{_money(f.get('rep_revenue'))}</div><div class="h">{f.get('rep_bookings',0)} bookings</div></div>
