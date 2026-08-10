@@ -123,58 +123,128 @@ def pace_page(_: bool = Depends(require_login)):
 
 
 def render_pace(d):
+    import datetime as _dt
     rows = ""
+    ahead = behind = 0
     for m in d["months"]:
         ty, ly, lyf = m["ty"], m["ly_same_time"], m["ly_final"]
         p = m["pickup"][14]
-        occ_d = round(ty["occ_pct"] - ly["occ_pct"], 1)
         rp_d = round(ty["revpar"] - ly["revpar"], 2)
-        cls = "up" if rp_d >= 0 else "down"
-        arrow = "▲" if rp_d >= 0 else "▼"
+        is_ahead = rp_d >= 0
+        ahead += 1 if is_ahead else 0
+        behind += 0 if is_ahead else 1
+        y, mo = (int(x) for x in m["month"].split("-"))
+        month_name = _dt.date(y, mo, 1).strftime("%B %Y")
+        when = "already started" if m["days_out"] <= 0 else f"starts in {m['days_out']} days"
+        badge = ('<span class="badge up">▲ Ahead of last year</span>' if is_ahead
+                 else '<span class="badge down">▼ Behind last year</span>')
         rows += f"""<tr>
-          <td class="mo">{m['month']}<span class="dim"> · {m['days_out']}d out</span></td>
-          <td class="num">{ty['occ_pct']}%<span class="dim"> vs {ly['occ_pct']}%</span></td>
-          <td class="num dim">{lyf['occ_pct']}%</td>
-          <td class="num">${ty['revpar']:.2f}<span class="dim"> vs ${ly['revpar']:.2f}</span></td>
-          <td class="num {cls}">{arrow} {abs(rp_d):.2f}</td>
-          <td class="num">{p['nights']}<span class="dim"> / {p['ly_nights']}</span></td></tr>"""
+          <td class="mo">{month_name}<br><span class="dim">{when}</span></td>
+          <td>{badge}</td>
+          <td class="num">{ty['occ_pct']}% full<br><span class="dim">last year now: {ly['occ_pct']}%</span></td>
+          <td class="num">${ty['revpar']:.0f}<br><span class="dim">last year now: ${ly['revpar']:.0f}</span></td>
+          <td class="num dim">{lyf['occ_pct']}% full</td>
+          <td class="num">{p['nights']} nights<br><span class="dim">last year: {p['ly_nights']}</span></td></tr>"""
 
+    total = ahead + behind
+    verdict_cls = "up" if ahead >= behind else "down"
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Tidewatch Pace</title>
+<title>Tidewatch Booking Pace</title>
 <style>
   :root {{ --bg:#f6f6f4; --card:#fff; --ink:#23221f; --dim:#6c6a64; --line:#e7e5df;
            --accent:#1D9E75; --red:#c0392b; }}
   * {{ box-sizing:border-box; }}
   body {{ font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
           background:var(--bg); color:var(--ink); margin:0; padding:24px; }}
-  .wrap {{ max-width:900px; margin:0 auto; }}
+  .wrap {{ max-width:940px; margin:0 auto; }}
   h1 {{ font-size:20px; font-weight:600; margin:0 0 2px; }}
-  .sub {{ color:var(--dim); font-size:13px; margin-bottom:20px; }}
+  .sub {{ color:var(--dim); font-size:14px; margin-bottom:16px; }}
   a.back {{ font-size:13px; color:var(--dim); text-decoration:none; }}
+  .verdict {{ background:var(--card); border:1px solid var(--line); border-radius:12px;
+              padding:14px 18px; font-size:15px; margin-bottom:18px; }}
+  .verdict b.up {{ color:var(--accent); }} .verdict b.down {{ color:var(--red); }}
   table {{ width:100%; border-collapse:collapse; background:var(--card);
            border:1px solid var(--line); border-radius:12px; overflow:hidden; font-size:14px; }}
   th {{ text-align:right; font-weight:500; color:var(--dim); font-size:12px;
         padding:10px 12px; border-bottom:1px solid var(--line); }}
-  th:first-child {{ text-align:left; }}
-  td {{ padding:12px; border-bottom:1px solid var(--line); }}
+  th:first-child, th:nth-child(2) {{ text-align:left; }}
+  td {{ padding:12px; border-bottom:1px solid var(--line); vertical-align:top; }}
   tr:last-child td {{ border-bottom:none; }}
   .num {{ text-align:right; white-space:nowrap; }} .dim {{ color:var(--dim); font-size:12px; }}
   .mo {{ font-weight:500; white-space:nowrap; }}
-  .up {{ color:var(--accent); font-weight:600; }} .down {{ color:var(--red); font-weight:600; }}
-  .foot {{ color:var(--dim); font-size:12px; margin-top:16px; line-height:1.6; }}
+  .badge {{ font-size:12px; font-weight:600; padding:4px 10px; border-radius:999px; white-space:nowrap; }}
+  .badge.up {{ background:#e2f4ec; color:var(--accent); }}
+  .badge.down {{ background:#fae8e5; color:var(--red); }}
+  .explain {{ background:var(--card); border:1px solid var(--line); border-radius:12px;
+              padding:20px 24px; margin-top:24px; font-size:14px; line-height:1.7; }}
+  .explain h2 {{ font-size:15px; margin:18px 0 6px; }}
+  .explain h2:first-child {{ margin-top:0; }}
+  .explain p {{ margin:6px 0; }}
+  .explain li {{ margin:4px 0; }}
 </style></head><body><div class="wrap">
-  <a class="back" href="/">← scoreboard</a>
-  <h1>Booking pace</h1>
-  <div class="sub">On-the-books vs same time last year (equal days-to-arrival) ·
-    {d['active_units']} active units · as of {d['as_of']}</div>
+  <a class="back" href="/">← back to scoreboard</a>
+  <h1>Booking pace — are we ahead of last year?</h1>
+  <div class="sub">Updated {d['as_of']} · compares today's bookings with the same point in time last year</div>
+
+  <div class="verdict">Right now we are <b class="{verdict_cls}">ahead of last year in
+  {ahead} of {total} months</b> (measured by money earned per home, per night).</div>
+
   <table>
-    <thead><tr><th>Stay month</th><th>Occ vs LY@</th><th>LY final</th>
-      <th>RevPAR vs LY@</th><th>RevPAR Δ</th><th>Pickup 14d (nts, TY/LY)</th></tr></thead>
-    <tbody>{rows or '<tr><td colspan=6 class="dim">No pace data yet — run pace.py.</td></tr>'}</tbody>
+    <thead><tr>
+      <th>Month</th><th>Are we ahead?</th><th>How full is it<br>booked so far?</th>
+      <th>Money per home,<br>per night</th><th>Where last year<br>ended up</th>
+      <th>New bookings,<br>last 2 weeks</th></tr></thead>
+    <tbody>{rows or '<tr><td colspan=6 class="dim">No data yet.</td></tr>'}</tbody>
   </table>
-  <div class="foot">"vs LY@" = last year's on-the-books at the same days-out, rebuilt from
-  booked-on dates. {' '.join(d['caveats'])}</div>
+
+  <div class="explain">
+    <h2>What is this page?</h2>
+    <p>Every row is a month people can stay with us. For each one we ask a single question:
+    <b>do we have more business booked for that month than we had at this exact point last
+    year?</b> If yes, we're "ahead." If no, we're "behind."</p>
+
+    <h2>Why compare with "the same time last year"?</h2>
+    <p>Here's the trap this page avoids. Say it's August and you look at October. October
+    only looks 13% full — scary! But October isn't done filling up; most people haven't
+    booked their October trip yet. Comparing today's October with how October
+    <i>finished</i> last year is unfair — it's comparing a cake that's still baking with one
+    that's done. The fair question is: <b>last year, on this same date in August, how full
+    was October then?</b> If we're fuller now than we were then, we're genuinely winning,
+    even if the number itself looks small.</p>
+
+    <h2>What each column means</h2>
+    <ul>
+      <li><b>Are we ahead?</b> — Green ▲ means we're making more money per home per night
+        than at this point last year. Red ▼ means less.</li>
+      <li><b>How full is it booked so far?</b> — Out of all the nights we could possibly
+        rent that month (every home × every night), the percent already booked. The small
+        gray number is where we stood at this same point last year.</li>
+      <li><b>Money per home, per night</b> — Total booking money for the month, divided by
+        every home and every night we have. This is the fairest single number: it can't be
+        fooled by us adding or removing homes, and it captures both "how full" and "at what
+        price." (Hotels call this RevPAR.)</li>
+      <li><b>Where last year ended up</b> — How full that month <i>finally</i> got last
+        year once all the bookings were in. It shows how much filling usually happens late,
+        so a small number today isn't alarming.</li>
+      <li><b>New bookings, last 2 weeks</b> — How many nights got booked for that month in
+        just the past 14 days, next to the same 14-day window last year. This is our speed:
+        even a month that's behind can be catching up fast.</li>
+    </ul>
+
+    <h2>Things to keep in mind</h2>
+    <ul>
+      <li>We divide by today's count of {d['active_units']} active homes for both years. If
+        our home count changed a lot since last year, the percentages shift a little — but
+        the ahead/behind comparison stays fair because both years use the same divisor.</li>
+      <li>Last year's "at this point" numbers are rebuilt from each booking's booked-on
+        date. Bookings that existed then but cancelled later aren't counted, so last year
+        may look slightly weaker than it really was.</li>
+      <li>"Money" here is the guest's total booking price, including fees, spread evenly
+        across the nights of the stay.</li>
+      <li>This page refreshes automatically every morning.</li>
+    </ul>
+  </div>
 </div></body></html>"""
 
 
