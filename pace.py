@@ -21,8 +21,9 @@ Modes:
   python3 pace.py            # pull + report + save today's snapshot
 
 Scope decisions (v1, deliberate):
-  - Demand = all channels, type OWN (owner blocks) excluded, status_code 8
-    (cancelled) excluded, INQR (inquiries) excluded.
+  - Demand = all channels; excluded: INQR (inquiries), OWN + MaintenanceBlock
+    (blocks, not guest demand), status_code 9 (cancelled — verified: ~$0 avg
+    revenue across all types; status 8 is the normal confirmed/completed state).
   - Revenue = price_total prorated per night across the stay's months.
   - Available unit-nights = CURRENT active unit count x days in month, for both
     years (flagged in output; unit-count history isn't in the API).
@@ -167,8 +168,8 @@ def _load(conn):
             """SELECT confirmation_id, type_name, status_code, creation_date,
                       startdate, enddate, days_number, price_total
                FROM pace_reservations
-               WHERE type_name NOT IN ('INQR','OWN')
-                 AND (status_code IS NULL OR status_code != 8)"""):
+               WHERE type_name NOT IN ('INQR','OWN','MaintenanceBlock')
+                 AND (status_code IS NULL OR status_code != 9)"""):
         booked = _pdate(cd)
         s, e = _pdate(sd), _pdate(ed)
         if not (booked and s and e) or e <= s:
