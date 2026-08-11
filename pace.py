@@ -153,8 +153,15 @@ def pull(client, conn):
 
     props = _data(client.call("GetPropertyList", {})).get("property") or []
     active = sum(1 for p in props if isinstance(p, dict) and _s(p.get("status_name")) == "Active")
-    conn.execute("INSERT INTO pace_state(k,v) VALUES('active_units',?) "
-                 "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(active or len(props)),))
+    active = active or len(props)
+    if active >= 10:
+        # Only store a sane value; a failed/empty property call must NEVER
+        # overwrite the last good unit count (a bad denominator poisons
+        # every percentage on the page).
+        conn.execute("INSERT INTO pace_state(k,v) VALUES('active_units',?) "
+                     "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(active),))
+    else:
+        print(f"WARNING: GetPropertyList returned {active} units — keeping last good count")
     conn.execute("INSERT INTO pace_state(k,v) VALUES('last_pull',?) "
                  "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
                  (datetime.datetime.now(datetime.timezone.utc).isoformat(),))
@@ -217,11 +224,24 @@ def _month_slice(res, month_first, cutoff, created_after=None, bucket=None):
     return nights, revenue
 
 
+def _units(conn, st):
+    """Active-unit count with a belt-and-suspenders fallback: if the stored
+    value is missing/absurd, approximate the fleet as the distinct units with
+    a stay in the last 12 months — never divide by 1."""
+    units = int(st.get("active_units", 0) or 0)
+    if units >= 10:
+        return units
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT unit_id) FROM pace_reservations "
+        "WHERE type_name NOT IN ('INQR','OWN','MaintenanceBlock')").fetchone()
+    return (row[0] if row and row[0] else 0) or 150
+
+
 def compute(conn, as_of=None):
     as_of = as_of or datetime.date.today()
     res = _load(conn)
     st = dict(conn.execute("SELECT k, v FROM pace_state").fetchall())
-    units = int(st.get("active_units", 0) or 0) or 1
+    units = _units(conn, st)
     ly_as_of = as_of - datetime.timedelta(days=365)
 
     months = []
@@ -329,7 +349,7 @@ def scorecard_history_csv(conn):
     2025, which is where our pull begins."""
     res = _load(conn)
     st = dict(conn.execute("SELECT k, v FROM pace_state").fetchall())
-    units = int(st.get("active_units", 0) or 0) or 1
+    units = _units(conn, st)
     today = datetime.date.today()
     d = datetime.date(2026, 1, 1)
     while d.weekday() != 2:  # Wednesday
