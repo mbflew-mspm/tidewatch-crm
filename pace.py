@@ -152,8 +152,12 @@ def pull(client, conn):
         cur = nxt
 
     props = _data(client.call("GetPropertyList", {})).get("property") or []
-    active = sum(1 for p in props if isinstance(p, dict) and _s(p.get("status_name")) == "Active")
-    active = active or len(props)
+    # Count UNIQUE ids — the API has returned inflated/duplicated lists on
+    # some calls (157 one pull, 199 another for the same fleet).
+    active_ids = {p.get("id") for p in props if isinstance(p, dict)
+                  and _s(p.get("status_name")) == "Active" and p.get("id")}
+    active = len(active_ids) or len({p.get("id") for p in props
+                                     if isinstance(p, dict) and p.get("id")})
     if active >= 10:
         # Only store a sane value; a failed/empty property call must NEVER
         # overwrite the last good unit count (a bad denominator poisons
