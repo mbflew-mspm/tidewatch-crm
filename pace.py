@@ -405,12 +405,14 @@ def scorecard_history_csv(conn):
     d = datetime.date(2026, 1, 1)
     while d.weekday() != 2:  # Wednesday
         d += datetime.timedelta(days=1)
-    lines = ["Week,Occupancy booked next 3 months (%),Same point last year (%),"
-             "Pace vs last year (%)"]
+    lines = ["Week,Occupancy booked next 3 months,Same point last year,"
+             "Pace vs last year"]
     while d <= today:
         m = scorecard_metrics(res, fleet, units, d, today)
-        lines.append(f"{d.strftime('%m/%d/%Y')},{m['occ_ty']},{m['occ_ly']},"
-                     f"{m['pace_pct'] if m['pace_pct'] is not None else ''}")
+        # Values carry their own % sign so Sheets parses them as true
+        # percentages — user-applied percent formatting can't inflate them.
+        pace = f"{m['pace_pct']}%" if m['pace_pct'] is not None else ""
+        lines.append(f"{d.strftime('%m/%d/%Y')},{m['occ_ty']}%,{m['occ_ly']}%,{pace}")
         d += datetime.timedelta(days=7)
     return "\n".join(lines) + "\n"
 
