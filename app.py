@@ -272,8 +272,9 @@ def render_pace(d, public=False):
     <ul>
       <li><b>Are we ahead?</b> — Green ▲ means we're making more money per home per night
         than at this point last year. Red ▼ means less.</li>
-      <li><b>How full is it booked so far?</b> — Out of all the nights we could possibly
-        rent that month (every home × every night), the percent already booked. The small
+      <li><b>How full is it booked so far?</b> — Out of the nights that are actually
+        available to rent that month (every home live that month × every night, minus
+        nights blocked by owners or maintenance), the percent already booked. The small
         gray number is where we stood at this same point last year.</li>
       <li><b>Average price per booked night</b> — Of the nights that ARE booked, the
         average price guests are paying per night. This is the "rates" side: it mostly
@@ -316,9 +317,10 @@ def render_pace(d, public=False):
 
     <h2>Things to keep in mind</h2>
     <ul>
-      <li>We divide by today's count of {d['active_units']} active homes for both years. If
-        our home count changed a lot since last year, the percentages shift a little — but
-        the ahead/behind comparison stays fair because both years use the same divisor.</li>
+      <li>Each month is divided by its OWN home count for its own year (derived from that
+        month's actual calendars — the fleet was ~170 homes last summer and ~157 now), with
+        owner-blocked and maintenance nights removed from "available." So both this year's
+        and last year's percentages reflect the fleet as it really was.</li>
       <li>Last year's "at this point" numbers are rebuilt from each booking's booked-on
         date. Bookings that existed then but cancelled later aren't counted, so last year
         may look slightly weaker than it really was.</li>

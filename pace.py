@@ -184,6 +184,45 @@ def _bucket(type_name, maketype):
     return "web"
 
 
+def _fleet_index(conn):
+    """Per-month fleet reality, derived from the calendar itself:
+    for each stay-month, the set of units with ANY non-cancelled record
+    (booking or block) touching it, plus the owner/maintenance blocked nights.
+    Validated against the hand-kept scorecard (169-170 derived vs 171-172
+    recorded for Jun 2025) and RevMax occupancy levels."""
+    idx = {}
+    for sd, ed, u, tn in conn.execute(
+            """SELECT startdate, enddate, unit_id, type_name FROM pace_reservations
+               WHERE type_name != 'INQR'
+                 AND (status_code IS NULL OR status_code != 9)"""):
+        s, e = _pdate(sd), _pdate(ed)
+        if not (s and e and u) or e <= s:
+            continue
+        mf = datetime.date(s.year, s.month, 1)
+        while mf < e:
+            nxt = _month_add(mf, 1)
+            n = (min(e, nxt) - max(s, mf)).days
+            if n > 0:
+                slot = idx.setdefault(mf, {"units": set(), "blocked": 0})
+                slot["units"].add(u)
+                if tn in ("OWN", "MaintenanceBlock"):
+                    slot["blocked"] += n
+            mf = nxt
+    return idx
+
+
+def _avail_nights(fleet, month_first, active_now, today):
+    """Rentable (available) nights for one month: live units x days, minus
+    blocked nights. Past months use the derived fleet (final truth); current/
+    future months floor the fleet at today's active count, since units with no
+    activity recorded *yet* are still listed and available."""
+    slot = fleet.get(month_first, {"units": set(), "blocked": 0})
+    derived = len(slot["units"])
+    cur_month = datetime.date(today.year, today.month, 1)
+    live = max(derived, active_now) if month_first >= cur_month else (derived or active_now)
+    return max(live * _days_in_month(month_first) - slot["blocked"], 1), live
+
+
 def _load(conn):
     """Demand bookings only: no inquiries, no owner blocks, no cancelled."""
     out = []
@@ -242,6 +281,8 @@ def compute(conn, as_of=None):
     res = _load(conn)
     st = dict(conn.execute("SELECT k, v FROM pace_state").fetchall())
     units = _units(conn, st)
+    fleet = _fleet_index(conn)
+    today = datetime.date.today()
     ly_as_of = as_of - datetime.timedelta(days=365)
 
     months = []
@@ -249,8 +290,8 @@ def compute(conn, as_of=None):
     for i in range(0, MONTHS_AHEAD + 1):
         mf = _month_add(this_month, i)
         mf_ly = datetime.date(mf.year - 1, mf.month, 1)
-        avail = units * _days_in_month(mf)
-        avail_ly = units * _days_in_month(mf_ly)
+        avail, live_ty = _avail_nights(fleet, mf, units, today)
+        avail_ly, live_ly = _avail_nights(fleet, mf_ly, units, today)
         days_out = (mf - as_of).days
 
         n_ty, r_ty = _month_slice(res, mf, as_of)
@@ -286,6 +327,7 @@ def compute(conn, as_of=None):
                          "revpar": round(r_lyf / avail_ly, 2)},
             "pickup": pickups,
             "channels": channels,
+            "live_units": {"ty": live_ty, "ly": live_ly},
         })
     return {
         "as_of": as_of.isoformat(),
@@ -293,7 +335,7 @@ def compute(conn, as_of=None):
         "last_pull": st.get("last_pull"),
         "caveats": [
             "Money = the homes' GROSS booking revenue (guest total incl. fees), not TideWatch's commission income.",
-            "Denominator uses CURRENT active unit count for both years.",
+            "Available nights = each month's own live-unit count (derived from calendar activity, per year) minus owner/maintenance-blocked nights.",
             "Last-year same-time is reconstructed from booked-on dates; bookings that later cancelled aren't counted (slightly understates LY pace).",
         ],
         "months": months,
@@ -316,12 +358,12 @@ def _window_slice(res, w_start, w_end, cutoff):
     return nights, revenue
 
 
-def scorecard_metrics(res, units, as_of):
+def scorecard_metrics(res, fleet, units, as_of, today):
     """The three scorecard numbers for one as-of date, over the window
     'current month + next two months' (matches the old H/I columns):
-      occ_ty   — occupancy % on the books for the window
+      occ_ty   — occupancy % on the books for the window (of available nights)
       occ_ly   — same window last year, as of the same date last year
-      pace_pct — RevPAR pace: TY per-unit-night revenue / LY same-time, x100
+      pace_pct — RevPAR pace: TY per-available-night revenue / LY same-time, x100
     """
     w_start = datetime.date(as_of.year, as_of.month, 1)
     w_end = _month_add(w_start, 3)
@@ -329,8 +371,12 @@ def scorecard_metrics(res, units, as_of):
     ly_end = _month_add(ly_start, 3)
     ly_as_of = as_of - datetime.timedelta(days=365)
 
-    avail = units * (w_end - w_start).days
-    avail_ly = units * (ly_end - ly_start).days
+    avail = avail_ly = 0
+    for i in range(3):
+        a, _ = _avail_nights(fleet, _month_add(w_start, i), units, today)
+        al, _ = _avail_nights(fleet, _month_add(ly_start, i), units, today)
+        avail += a
+        avail_ly += al
     n_ty, r_ty = _window_slice(res, w_start, w_end, as_of)
     n_ly, r_ly = _window_slice(res, ly_start, ly_end, ly_as_of)
 
@@ -350,6 +396,7 @@ def scorecard_history_csv(conn):
     res = _load(conn)
     st = dict(conn.execute("SELECT k, v FROM pace_state").fetchall())
     units = _units(conn, st)
+    fleet = _fleet_index(conn)
     today = datetime.date.today()
     d = datetime.date(2026, 1, 1)
     while d.weekday() != 2:  # Wednesday
@@ -357,7 +404,7 @@ def scorecard_history_csv(conn):
     lines = ["Week,Occupancy booked next 3 months (%),Same point last year (%),"
              "Pace vs last year (%)"]
     while d <= today:
-        m = scorecard_metrics(res, units, d)
+        m = scorecard_metrics(res, fleet, units, d, today)
         lines.append(f"{d.strftime('%m/%d/%Y')},{m['occ_ty']},{m['occ_ly']},"
                      f"{m['pace_pct'] if m['pace_pct'] is not None else ''}")
         d += datetime.timedelta(days=7)
