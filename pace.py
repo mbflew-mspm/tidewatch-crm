@@ -179,6 +179,31 @@ def pull(client, conn):
 # ---------------------------------------------------------------- compute
 OTA_TYPES = {"SC-ABnB", "HAFamOLB", "SC-Booking.com", "HomeToGo", "BOOST (PDWTA)", "PGO"}
 
+# Calibration to Streamline's own Revenue Pacing Report ("Sales as 08/12/2025",
+# from Matt's export on 2026-08-12). Our last-year reconstruction only sees each
+# booking's FINAL value, so modifications made after the as-of date inflate our
+# baseline; these are the true on-the-books values per stay month. We anchor a
+# per-month correction ratio (Streamline / our reconstruction at the same
+# cutoff) and apply it to the reconstructed LY revenue.
+SL_ASOF_LY = {
+    (2025, 8): 422318.57, (2025, 9): 220044.01, (2025, 10): 139298.31,
+    (2025, 11): 62925.93, (2025, 12): 43264.88,
+}
+SL_ANCHOR = datetime.date(2025, 8, 12)
+
+
+def _calibration_ratio(res, mf_ly):
+    """Correction ratio for one last-year stay month; (1.0, False) if we have
+    no Streamline anchor for it."""
+    key = (mf_ly.year, mf_ly.month)
+    if key not in SL_ASOF_LY:
+        return 1.0, False
+    _n, mine = _month_slice(res, mf_ly, SL_ANCHOR)
+    if mine <= 0:
+        return 1.0, False
+    ratio = SL_ASOF_LY[key] / mine
+    return min(max(ratio, 0.5), 1.2), True
+
 
 def _bucket(type_name, maketype):
     """Who produced the booking: our reservationists ('team'), guests
@@ -302,6 +327,8 @@ def compute(conn, as_of=None):
 
         n_ty, r_ty = _month_slice(res, mf, as_of)
         n_ly, r_ly = _month_slice(res, mf_ly, ly_as_of)
+        ratio, calibrated = _calibration_ratio(res, mf_ly)
+        r_ly *= ratio
         n_lyf, r_lyf = _month_slice(res, mf_ly, as_of)  # LY final (all bookings)
         pickups = {}
         for pd in PICKUP_DAYS:
@@ -334,6 +361,7 @@ def compute(conn, as_of=None):
             "pickup": pickups,
             "channels": channels,
             "live_units": {"ty": live_ty, "ly": live_ly},
+            "ly_calibrated": calibrated,
         })
     return {
         "as_of": as_of.isoformat(),
@@ -342,7 +370,7 @@ def compute(conn, as_of=None):
         "caveats": [
             "Money = the homes' GROSS booking revenue (guest total incl. fees), not TideWatch's commission income.",
             "Available nights = each month's own live-unit count (derived from calendar activity, per year) minus owner/maintenance-blocked nights.",
-            "Last-year same-time is reconstructed from booked-on dates; bookings that later cancelled aren't counted (slightly understates LY pace).",
+            "Last-year same-time is reconstructed from booked-on dates; money baselines for Aug-Dec 2025 are calibrated to Streamline's Revenue Pacing report (as-of 8/12/2025).",
         ],
         "months": months,
     }
@@ -378,13 +406,18 @@ def scorecard_metrics(res, fleet, units, as_of, today):
     ly_as_of = as_of - datetime.timedelta(days=365)
 
     avail = avail_ly = 0
+    n_ly = r_ly = 0
     for i in range(3):
         a, _ = _avail_nights(fleet, _month_add(w_start, i), units, today)
         al, _ = _avail_nights(fleet, _month_add(ly_start, i), units, today)
         avail += a
         avail_ly += al
+        mly = _month_add(ly_start, i)
+        n_m, r_m = _month_slice(res, mly, ly_as_of)
+        ratio, _cal = _calibration_ratio(res, mly)
+        n_ly += n_m
+        r_ly += r_m * ratio
     n_ty, r_ty = _window_slice(res, w_start, w_end, as_of)
-    n_ly, r_ly = _window_slice(res, ly_start, ly_end, ly_as_of)
 
     revpar_ty = r_ty / avail if avail else 0
     revpar_ly = r_ly / avail_ly if avail_ly else 0

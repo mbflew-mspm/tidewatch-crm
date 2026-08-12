@@ -322,8 +322,8 @@ def render_pace(d, public=False):
         owner-blocked and maintenance nights removed from "available." So both this year's
         and last year's percentages reflect the fleet as it really was.</li>
       <li>Last year's "at this point" numbers are rebuilt from each booking's booked-on
-        date. Bookings that existed then but cancelled later aren't counted, so last year
-        may look slightly weaker than it really was.</li>
+        date, and the money figures are calibrated against Streamline's own Revenue
+        Pacing report so they match what Streamline shows for the same date.</li>
       <li>"Money" here is the guest's total booking price, including fees, spread evenly
         across the nights of the stay.</li>
       <li>This page refreshes automatically every morning.</li>
