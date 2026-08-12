@@ -179,30 +179,36 @@ def pull(client, conn):
 # ---------------------------------------------------------------- compute
 OTA_TYPES = {"SC-ABnB", "HAFamOLB", "SC-Booking.com", "HomeToGo", "BOOST (PDWTA)", "PGO"}
 
-# Calibration to Streamline's own Revenue Pacing Report ("Sales as 08/12/2025",
-# from Matt's export on 2026-08-12). Our last-year reconstruction only sees each
-# booking's FINAL value, so modifications made after the as-of date inflate our
-# baseline; these are the true on-the-books values per stay month. We anchor a
-# per-month correction ratio (Streamline / our reconstruction at the same
-# cutoff) and apply it to the reconstructed LY revenue.
-SL_ASOF_LY = {
+# Calibration to Streamline's own Revenue Pacing Report (Matt's export,
+# "Sales as 08/12/2025" and "Sales as 08/12/2026" rows). Two problems it fixes:
+#   1. Our last-year reconstruction only sees each booking's FINAL value, so
+#      modifications made after the as-of date inflate our LY baseline.
+#   2. Streamline attributes revenue to months differently than our per-night
+#      proration (visible on Sep/Dec), so BOTH years get anchored, keeping the
+#      TY-vs-LY verdict on Streamline's basis while day-to-day movement still
+#      comes from our live data.
+# At the anchor date the money pace equals Streamline's own YoY change exactly
+# (per-available-night normalization aside). Next year, true daily snapshots
+# replace all of this.
+SL_ASOF = {
     (2025, 8): 422318.57, (2025, 9): 220044.01, (2025, 10): 139298.31,
     (2025, 11): 62925.93, (2025, 12): 43264.88,
+    (2026, 8): 468289.12, (2026, 9): 211252.97, (2026, 10): 163560.08,
+    (2026, 11): 93629.79, (2026, 12): 22206.46,
 }
-SL_ANCHOR = datetime.date(2025, 8, 12)
+SL_ANCHORS = {2025: datetime.date(2025, 8, 12), 2026: datetime.date(2026, 8, 12)}
 
 
-def _calibration_ratio(res, mf_ly):
-    """Correction ratio for one last-year stay month; (1.0, False) if we have
-    no Streamline anchor for it."""
-    key = (mf_ly.year, mf_ly.month)
-    if key not in SL_ASOF_LY:
+def _calibration_ratio(res, month_first):
+    """Correction ratio for one stay month; (1.0, False) if no anchor."""
+    key = (month_first.year, month_first.month)
+    if key not in SL_ASOF:
         return 1.0, False
-    _n, mine = _month_slice(res, mf_ly, SL_ANCHOR)
+    _n, mine = _month_slice(res, month_first, SL_ANCHORS[month_first.year])
     if mine <= 0:
         return 1.0, False
-    ratio = SL_ASOF_LY[key] / mine
-    return min(max(ratio, 0.5), 1.2), True
+    ratio = SL_ASOF[key] / mine
+    return min(max(ratio, 0.35), 1.5), True
 
 
 def _bucket(type_name, maketype):
@@ -327,8 +333,11 @@ def compute(conn, as_of=None):
 
         n_ty, r_ty = _month_slice(res, mf, as_of)
         n_ly, r_ly = _month_slice(res, mf_ly, ly_as_of)
-        ratio, calibrated = _calibration_ratio(res, mf_ly)
-        r_ly *= ratio
+        ratio_ty, cal_ty = _calibration_ratio(res, mf)
+        ratio_ly, cal_ly = _calibration_ratio(res, mf_ly)
+        r_ty *= ratio_ty
+        r_ly *= ratio_ly
+        calibrated = cal_ty and cal_ly
         n_lyf, r_lyf = _month_slice(res, mf_ly, as_of)  # LY final (all bookings)
         pickups = {}
         for pd in PICKUP_DAYS:
@@ -406,18 +415,22 @@ def scorecard_metrics(res, fleet, units, as_of, today):
     ly_as_of = as_of - datetime.timedelta(days=365)
 
     avail = avail_ly = 0
-    n_ly = r_ly = 0
+    n_ty = r_ty = n_ly = r_ly = 0
     for i in range(3):
-        a, _ = _avail_nights(fleet, _month_add(w_start, i), units, today)
-        al, _ = _avail_nights(fleet, _month_add(ly_start, i), units, today)
+        mty = _month_add(w_start, i)
+        mly = _month_add(ly_start, i)
+        a, _ = _avail_nights(fleet, mty, units, today)
+        al, _ = _avail_nights(fleet, mly, units, today)
         avail += a
         avail_ly += al
-        mly = _month_add(ly_start, i)
+        n_m, r_m = _month_slice(res, mty, as_of)
+        rt, _c = _calibration_ratio(res, mty)
+        n_ty += n_m
+        r_ty += r_m * rt
         n_m, r_m = _month_slice(res, mly, ly_as_of)
-        ratio, _cal = _calibration_ratio(res, mly)
+        rl, _c = _calibration_ratio(res, mly)
         n_ly += n_m
-        r_ly += r_m * ratio
-    n_ty, r_ty = _window_slice(res, w_start, w_end, as_of)
+        r_ly += r_m * rl
 
     revpar_ty = r_ty / avail if avail else 0
     revpar_ly = r_ly / avail_ly if avail_ly else 0
