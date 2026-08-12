@@ -190,24 +190,40 @@ OTA_TYPES = {"SC-ABnB", "HAFamOLB", "SC-Booking.com", "HomeToGo", "BOOST (PDWTA)
 # At the anchor date the money pace equals Streamline's own YoY change exactly
 # (per-available-night normalization aside). Next year, true daily snapshots
 # replace all of this.
+# (stay-year, stay-month) -> (SL on-the-books $, the "Sales as" anchor date)
+_A25 = datetime.date(2025, 8, 12)
+_A26 = datetime.date(2026, 8, 12)
 SL_ASOF = {
-    (2025, 8): 422318.57, (2025, 9): 220044.01, (2025, 10): 139298.31,
-    (2025, 11): 62925.93, (2025, 12): 43264.88,
-    (2026, 8): 468289.12, (2026, 9): 211252.97, (2026, 10): 163560.08,
-    (2026, 11): 93629.79, (2026, 12): 22206.46,
+    # from the 2025-vs-2026 report (Matt, 8/12/2026)
+    (2025, 8): (422318.57, _A25), (2025, 9): (220044.01, _A25),
+    (2025, 10): (139298.31, _A25), (2025, 11): (62925.93, _A25),
+    (2025, 12): (43264.88, _A25),
+    (2026, 8): (468289.12, _A26), (2026, 9): (211252.97, _A26),
+    (2026, 10): (163560.08, _A26), (2026, 11): (93629.79, _A26),
+    (2026, 12): (22206.46, _A26),
+    # from the 2026-vs-2027 report (Matt, 8/12/2026): LY + TY anchors for Jan/Feb
+    (2026, 1): (16119.44, _A25), (2026, 2): (30158.41, _A25),
+    (2027, 1): (34032.02, _A26), (2027, 2): (32000.90, _A26),
 }
-SL_ANCHORS = {2025: datetime.date(2025, 8, 12), 2026: datetime.date(2026, 8, 12)}
+# An anchor only corrects cutoffs reasonably near it; beyond this the stale
+# ratio could mislead, so calibration expires gracefully (fresh report exports
+# renew it — needed at most monthly, and only until snapshots take over).
+MAX_ANCHOR_DRIFT_DAYS = 150
 
 
-def _calibration_ratio(res, month_first):
-    """Correction ratio for one stay month; (1.0, False) if no anchor."""
-    key = (month_first.year, month_first.month)
-    if key not in SL_ASOF:
+def _calibration_ratio(res, month_first, cutoff):
+    """Correction ratio for one stay month at one cutoff; (1.0, False) if no
+    usable anchor."""
+    entry = SL_ASOF.get((month_first.year, month_first.month))
+    if not entry:
         return 1.0, False
-    _n, mine = _month_slice(res, month_first, SL_ANCHORS[month_first.year])
+    sl_value, anchor = entry
+    if abs((cutoff - anchor).days) > MAX_ANCHOR_DRIFT_DAYS:
+        return 1.0, False
+    _n, mine = _month_slice(res, month_first, anchor)
     if mine <= 0:
         return 1.0, False
-    ratio = SL_ASOF[key] / mine
+    ratio = sl_value / mine
     return min(max(ratio, 0.35), 1.5), True
 
 
@@ -333,8 +349,8 @@ def compute(conn, as_of=None):
 
         n_ty, r_ty = _month_slice(res, mf, as_of)
         n_ly, r_ly = _month_slice(res, mf_ly, ly_as_of)
-        ratio_ty, cal_ty = _calibration_ratio(res, mf)
-        ratio_ly, cal_ly = _calibration_ratio(res, mf_ly)
+        ratio_ty, cal_ty = _calibration_ratio(res, mf, as_of)
+        ratio_ly, cal_ly = _calibration_ratio(res, mf_ly, ly_as_of)
         r_ty *= ratio_ty
         r_ly *= ratio_ly
         calibrated = cal_ty and cal_ly
@@ -424,11 +440,11 @@ def scorecard_metrics(res, fleet, units, as_of, today):
         avail += a
         avail_ly += al
         n_m, r_m = _month_slice(res, mty, as_of)
-        rt, _c = _calibration_ratio(res, mty)
+        rt, _c = _calibration_ratio(res, mty, as_of)
         n_ty += n_m
         r_ty += r_m * rt
         n_m, r_m = _month_slice(res, mly, ly_as_of)
-        rl, _c = _calibration_ratio(res, mly)
+        rl, _c = _calibration_ratio(res, mly, ly_as_of)
         n_ly += n_m
         r_ly += r_m * rl
 
