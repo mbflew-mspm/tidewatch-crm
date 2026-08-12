@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS pace_reservations (
   confirmation_id INTEGER PRIMARY KEY,
   type_name TEXT, status_code INTEGER, unit_id INTEGER,
   creation_date TEXT, startdate TEXT, enddate TEXT,
-  days_number INTEGER, price_total REAL, hear_about TEXT,
+  days_number INTEGER, price_total REAL, price_rent REAL, hear_about TEXT,
   maketype TEXT,
   pulled_at TEXT
 );
@@ -129,20 +129,22 @@ def pull(client, conn):
             conn.execute(
                 """INSERT INTO pace_reservations
                    (confirmation_id, type_name, status_code, unit_id, creation_date,
-                    startdate, enddate, days_number, price_total, hear_about, maketype,
-                    pulled_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    startdate, enddate, days_number, price_total, price_rent,
+                    hear_about, maketype, pulled_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(confirmation_id) DO UPDATE SET
                     type_name=excluded.type_name, status_code=excluded.status_code,
                     unit_id=excluded.unit_id, creation_date=excluded.creation_date,
                     startdate=excluded.startdate, enddate=excluded.enddate,
                     days_number=excluded.days_number, price_total=excluded.price_total,
+                    price_rent=excluded.price_rent,
                     hear_about=excluded.hear_about, maketype=excluded.maketype,
                     pulled_at=excluded.pulled_at""",
                 (_num(r.get("confirmation_id")), _s(r.get("type_name")),
                  _num(r.get("status_code")), _num(r.get("unit_id")),
                  _s(r.get("creation_date")), _s(r.get("startdate")), _s(r.get("enddate")),
                  _num(r.get("days_number")), _num(r.get("price_total")),
+                 _num(r.get("price_nightly")),  # rent subtotal (rent-only, no fees/taxes)
                  _s(r.get("hear_about_name")), _s(r.get("maketype_name")),
                  datetime.datetime.now(datetime.timezone.utc).isoformat()))
             n_rows += 1
@@ -450,10 +452,12 @@ def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
-    try:  # migration for tables created before the maketype column existed
-        conn.execute("ALTER TABLE pace_reservations ADD COLUMN maketype TEXT")
-    except sqlite3.OperationalError:
-        pass
+    for mig in ("ALTER TABLE pace_reservations ADD COLUMN maketype TEXT",
+                "ALTER TABLE pace_reservations ADD COLUMN price_rent REAL"):
+        try:  # migrations for tables created before these columns existed
+            conn.execute(mig)
+        except sqlite3.OperationalError:
+            pass
     if mode in ("pull", "all"):
         client = StreamlineClient(TokenStore(
             os.environ.get("TOKEN_STORE_PATH", "tokens.json"),
